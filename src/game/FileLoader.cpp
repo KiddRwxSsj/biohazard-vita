@@ -46,6 +46,11 @@ size_t LoadFile(const char* path, void* buffer, unsigned char flags)
         // Try to open the file
         FILE* fp = fopen(filePath, "rb");
         if (fp != NULL) {
+            // Port: unbuffered, so the fread below is one read straight into
+            // the buffer. Buffered, newlib (the Vita) refills a 1 KB stdio
+            // buffer per read call - a few hundred device reads per room.
+            setvbuf(fp, NULL, _IONBF, 0);
+
             // Get file size
             fseek(fp, 0, SEEK_END);
             size_t fileSize = ftell(fp);
