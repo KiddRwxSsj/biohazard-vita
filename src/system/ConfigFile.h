@@ -30,3 +30,9 @@ BOOL ConfigFile_Load(void);
 
 // Write the current settings back, preserving everything else in the file.
 void ConfigFile_Save(void);
+
+// Read any key from config.ini, for a platform layer with settings of its own
+// (the Vita's [Vita] section). These never write; a key nobody owns is left
+// exactly as the player wrote it by ConfigFile_Save.
+BOOL ConfigFile_ReadString(const char* section, const char* key, char* out, size_t outSize);
+int  ConfigFile_ReadInt(const char* section, const char* key, int fallback);

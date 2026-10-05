@@ -120,12 +120,14 @@ BOOL ReadValue(const char* path, const char* section, const char* key,
             continue;
         }
 
-        if (strcmp(current, section) != 0) continue;
+        // INI names match without regard to case, as GetPrivateProfileString
+        // does; "[vita]" or "aspect=" must not be silently ignored.
+        if (_stricmp(current, section) != 0) continue;
 
         char* eq = strchr(p, '=');
         if (eq == NULL) continue;
         *eq = '\0';
-        if (strcmp(Trim(p), key) != 0) continue;
+        if (_stricmp(Trim(p), key) != 0) continue;
 
         char* v = Trim(eq + 1);
         strncpy(out, v, outSize - 1);
@@ -233,6 +235,18 @@ void SetValue(const char* section, const char* key, const char* value,
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+BOOL ConfigFile_ReadString(const char* section, const char* key, char* out, size_t outSize)
+{
+    if (out == NULL || outSize == 0) return FALSE;
+    return ReadValue(ConfigFile_Find(), section, key, out, outSize);
+}
+
+int ConfigFile_ReadInt(const char* section, const char* key, int fallback)
+{
+    return ReadInt(ConfigFile_Find(), section, key, fallback);
+}
 
 // ---------------------------------------------------------------------------
 const char* ConfigFile_Find(void)
