@@ -322,3 +322,8 @@ void plat_cursor_show(BOOL show)
 {
     ShowCursor(show);
 }
+
+unsigned char plat_pad_button_glyph(int)
+{
+    return 0;   // generic pads: keep the numbered labels
+}

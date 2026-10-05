@@ -128,6 +128,17 @@ void plat_window_destroy(HWND window);
 void plat_cursor_show(BOOL show);
 
 // ---------------------------------------------------------------------------
+// Pad button labels
+//
+// The options screen spells a bound pad button as one 8x14 glyph from
+// fontus.tim's game-text encoding. `bit` is the button's bit in the Marni pad
+// word (8 = button 1, see MarniXInput.h). Return 0 to keep the PC's numbered
+// labels, or the glyph code of the button's printed symbol on platforms whose
+// pad has them.
+// ---------------------------------------------------------------------------
+unsigned char plat_pad_button_glyph(int bit);
+
+// ---------------------------------------------------------------------------
 // FMV playback backend (Phase 7)
 //
 // src/video/VideoPlayback.cpp owns the 4-state machine, the per-FMV skip masks,

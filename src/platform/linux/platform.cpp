@@ -360,3 +360,8 @@ void plat_cursor_show(BOOL show)
 {
     SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE);
 }
+
+unsigned char plat_pad_button_glyph(int)
+{
+    return 0;   // generic pads: keep the numbered labels
+}

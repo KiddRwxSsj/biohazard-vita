@@ -222,9 +222,12 @@ static int s_optLightData2[4];  // 0x00d22720
 // render_entity does in gameplay.
 #define DAT_00be9a88 (*(unsigned char*)&g_spriteAnimSlots[2])
 
-// Load/save state flag (aliased from g_loadSaveStateFlag)
-// 0x004d4678
-static int s_loadSaveStateFlag;
+// Load/save state flag, 0x004d4678 - the same global game_loop sets before
+// running options_menu (GameLoop.cpp, 0x00481621), not a copy of it. It used
+// to be a separate static here, so closing Option Mode cleared the copy and
+// left g_loadSaveStateFlag at 1 for good, which shut every gate that checks
+// it (the quick save / quick load requests and the F1 debug quick access).
+#define s_loadSaveStateFlag g_loadSaveStateFlag
 
 // ============================================================================
 // Static globals - Options menu state
@@ -396,7 +399,13 @@ done:
 void options_map_key_to_print_index(int param_1)
 {
     int idx = *(int*)((unsigned char*)param_1 + 4);
-    unsigned char ch;
+    unsigned char ch = plat_pad_button_glyph(idx);
+    if (ch != 0) {
+        // Port addition: the pad's printed symbol instead of its number.
+        *(unsigned char*)(param_1 + 2) = ch;
+        *(unsigned char*)(param_1 + 1) = ch;
+        return;
+    }
     switch (idx) {
     case 0:  ch = 0x10; break;
     case 1:  ch = 0x12; break;
