@@ -24,12 +24,14 @@
 //   Task_exit (FUN_00420210) at 0x00420210
 //   Task_chain at 0x00420230
 //
-// Two switch implementations, selected by compiler:
+// Three switch implementations, selected by compiler:
 //   - MSVC x86: the original's naked-asm ESP switching (below).
-//   - Everything else (Linux, and later ARM): ucontext makecontext/swapcontext,
-//     which expresses the same "run until yield, resume where you left off"
+//   - PS Vita: a kernel thread per slot handed off with semaphores, since the
+//     kernel rejects syscalls made from a stack it did not allocate.
+//   - Everything else (Linux): ucontext makecontext/swapcontext, which
+//     expresses the same "run until yield, resume where you left off"
 //     contract without hand-written assembly. See docs/LINUX_PORT.md Phase 1.
-// Both share the public API and the scheduling loop.
+// All share the public API and the scheduling loop.
 //
 // IMPORTANT (MSVC path): /RTCs (Runtime Stack Check) MUST be disabled in this
 // file. The manual ESP switching (g_SchedulerESP save/restore via naked asm and
@@ -186,7 +188,96 @@ static void TaskSwitch_Resume(void)
     ReturnToScheduler_Resume();
 }
 
-#else  // !(MSVC x86)
+#elif defined(__vita__)
+
+// ============================================================================
+// PS Vita: one kernel thread per task slot.
+//
+// Swapping SP onto a heap stack does not work here. The kernel checks on every
+// syscall that SP lies inside the calling thread's registered stack, and kills
+// the thread (stop reason 0x10006) when it does not - the first fopen() a task
+// made was enough. So each slot gets a real thread with its own kernel stack,
+// and two semaphores hand control back and forth so that exactly one side runs
+// at a time. That is the same contract as the asm path: a task runs until it
+// yields, the scheduler continues after the switch call, a resume re-enters
+// the task where it stopped.
+//
+// Restarting a slot (Task_chain, or Task_execute on a slot that already ran)
+// has to throw the old stack away like the asm path does by resetting ESP. The
+// slot's thread is always parked inside TaskYield at that point, so it is told
+// to longjmp back to the top of its own entry function and run the new EIP.
+// ============================================================================
+#include <psp2/kernel/threadmgr.h>
+#include <setjmp.h>
+
+static SceUID s_SchedSema = -1;
+static SceUID s_TaskSema[TASK_MAX]   = { -1, -1, -1 };
+static SceUID s_TaskThread[TASK_MAX] = { -1, -1, -1 };
+static int    s_TaskId[TASK_MAX]     = { 0, 1, 2 };
+static jmp_buf s_TaskTop[TASK_MAX];
+static volatile int s_TaskRestart[TASK_MAX];
+
+void Task_exit(void);
+
+static int TaskThread(SceSize, void* argp)
+{
+    const int id = *(const int*)argp;
+    setjmp(s_TaskTop[id]);
+
+    void (*fn)(void) = (void (*)(void))g_TasksEIP[id];
+    fn();
+    Task_exit();
+    return 0;
+}
+
+static void WaitForTask(void)
+{
+    sceKernelWaitSema(s_SchedSema, 1, NULL);
+}
+
+static void TaskSwitch_Start(void)
+{
+    int id = g_CurrentTaskID;
+
+    if (s_SchedSema < 0) {
+        s_SchedSema = sceKernelCreateSema("re1_sched", 0, 0, 1, NULL);
+    }
+    if (s_TaskThread[id] < 0) {
+        char name[16];
+        snprintf(name, sizeof(name), "re1_task%d", id);
+        s_TaskSema[id] = sceKernelCreateSema(name, 0, 0, 1, NULL);
+        s_TaskThread[id] = sceKernelCreateThread(name, TaskThread, 0x10000100,
+                                                 TASK_STACK_SIZE, 0, 0, NULL);
+        if (s_TaskSema[id] < 0 || s_TaskThread[id] < 0) {
+            plat_fatal("Failed to create task thread");
+        }
+        sceKernelStartThread(s_TaskThread[id], sizeof(int), &s_TaskId[id]);
+    } else {
+        s_TaskRestart[id] = 1;
+        sceKernelSignalSema(s_TaskSema[id], 1);
+    }
+    WaitForTask();
+}
+
+static void TaskSwitch_Resume(void)
+{
+    sceKernelSignalSema(s_TaskSema[g_CurrentTaskID], 1);
+    WaitForTask();
+}
+
+static void TaskYield(void)
+{
+    int id = g_CurrentTaskID;
+    sceKernelSignalSema(s_SchedSema, 1);
+    sceKernelWaitSema(s_TaskSema[id], 1, NULL);
+
+    if (s_TaskRestart[id]) {
+        s_TaskRestart[id] = 0;
+        longjmp(s_TaskTop[id], 1);
+    }
+}
+
+#else  // !(MSVC x86) && !vita
 
 // ============================================================================
 // Portable switch primitives (ucontext).
@@ -239,7 +330,7 @@ static void TaskYield(void)
     swapcontext(&s_TaskContext[g_CurrentTaskID], &s_SchedContext);
 }
 
-#endif  // _MSC_VER && _M_IX86
+#endif  // _MSC_VER && _M_IX86 / __vita__
 
 // ============================================================================
 // TaskScheduler_Update (0x004200E0)
