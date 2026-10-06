@@ -206,6 +206,11 @@ int DebugQuick_LoadSlot(int slot)
         return 0;
     }
     DebugRestoreSaveBlock(fileBuffer, fileSize);
+    // A typewriter save always stands where camera 0 (or one switch from it)
+    // sees the player, which is all room_set's initial camera pick handles. A
+    // quick save can be made anywhere, so hand room_set the camera it was made
+    // on; the card has carried it all along (g_roomCameraId, 0x202).
+    g_portRestoreCameraId = g_roomCameraId;
     g_main_state_flags |= MSF_CONTINUE_GAME;   // InitializeGame continue branch
     DebugAdoptLoadedCharacter();
     g_main_state_flags2 &= MSF2_RESET_KEEP_MASK;

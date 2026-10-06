@@ -237,6 +237,19 @@ void InputUpdate(void)
 // Returns g_button_pressed_id = g_RawPadHeld (current held, full 32-bit
 // but only the low 16 bits are used by FMV skip and most callers).
 // ============================================================================
+// Port-added auto-run (g_portAutoRun). Bit 0x200 is the run modifier and only
+// player_ctrl_behavior_walk / player_behavior_0d_run read it, both while bit 1
+// (forward) is down, so flipping it only while forward is held turns "hold to
+// run" into "hold to walk" and leaves every other use of the word alone. The
+// previous-frame word gets the same flip so no false run edge is produced.
+static WORD ApplyAutoRun(WORD dpad)
+{
+	if (g_portAutoRun != 0 && (dpad & 1) != 0) {
+		dpad ^= 0x200;
+	}
+	return dpad;
+}
+
 DWORD PlayerPad_Update(void)
 {
 	WORD prevDpadState;
@@ -264,6 +277,7 @@ DWORD PlayerPad_Update(void)
 	if ((prevDpadState & 2) != 0) {
 		prevDpadState &= 0xFFF7;
 	}
+	prevDpadState = ApplyAutoRun(prevDpadState);
 
 	// Part 2: Save previous states
 	// Save the PREVIOUS raw held (0x00bf0a04) to pressed, not the edge-detected
@@ -316,6 +330,7 @@ DWORD PlayerPad_Update(void)
 	if ((g_PlayerDpadHeld & 2) != 0) {
 		g_PlayerDpadHeld &= 0xFFF7;
 	}
+	g_PlayerDpadHeld = ApplyAutoRun(g_PlayerDpadHeld);
 
 	// Part 6: Edge detect on DPad
 	g_PlayerDpadPressed = ~prevDpadState & g_PlayerDpadHeld;

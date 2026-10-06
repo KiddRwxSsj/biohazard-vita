@@ -1863,7 +1863,10 @@ char           g_pakStringBuf[512] = {};
 // 0xA4-byte record carved from the RDT VB region by room_set (count = RDT
 // omodel_slot_count) and filled by cmd_omodel_set; walked by
 // update_room_objects / check_climb_object and targetable from SCD scripts.
-void*          g_omodel_table[8] = {};
+// 14 slots: the original has nothing else until 0x00d226e8. 8 was too few -
+// the courtyard room past the first iron gate has 9, and room_set wrote the
+// ninth pointer into whatever the linker put next.
+void*          g_omodel_table[14] = {};
 
 // 0x00d21360 - Item model record table. One 0xA4-byte record per RDT item_models
 // pair (count = RDT item_count), carved from the VB region by room_set and filled
@@ -1871,7 +1874,8 @@ void*          g_omodel_table[8] = {};
 // the one lying on the floor, or the one a desk close-up reveals. Byte 0 bit 0 is
 // "currently drawn" (renderer pass 1); pickup clears it and frees the sparkle
 // billboard at +0x86. Also an entity target for event scripts.
-void*          g_item_model_table[8] = {};
+// 16 slots, up to g_itemUseFlags at 0x00d213a0 (see g_omodel_table).
+void*          g_item_model_table[16] = {};
 
 // 0x00ae9ef4 - Count of object models loaded by cmd_omodel_set in current room
 int            g_omodelCount = 0;
@@ -2023,6 +2027,11 @@ extern "C" void re1_srand(unsigned int seed)
     g_randState = seed;
 }
 
+extern "C" unsigned int re1_rand_state(void)
+{
+    return g_randState;
+}
+
 extern "C" int re1_rand(void)
 {
     if (g_GameMode == GAME_MODE_DC) {
@@ -2045,11 +2054,37 @@ extern "C" void srand(unsigned int seed) noexcept
 }
 #endif
 
+#if defined(__vita__)
+// newlib declares these without an exception spec, so no noexcept here.
+extern "C" int rand(void)
+{
+    return re1_rand();
+}
+
+extern "C" void srand(unsigned int seed)
+{
+    re1_srand(seed);
+}
+#endif
+
 // Port-added debug helpers (no original address; set by F6 in WindowProc
 // and by the F1 debug menu's QUICK ACCESS screen). F6 requests the texture viewer
 // overlay, g_debugOpenLoadScreenFlag requests the load screen (title flow).
 int            g_debugOpenLoadScreenFlag = 0;
 int            g_debugLoadSlot = 0;    // quick access load: selected slot index
+int            g_portQuickSlot = 0;
+int            g_portQuickSaveRequest = 0;
+int            g_portQuickSaveResult = 0;
+int            g_portQuickLoadRequest = 0;
+DWORD          g_portGameplayFrame = 0;
+int            g_portRestoreCameraId = -1;
+int            g_portAutoRun = 0;
+int            g_portSkipDoors = 0;
+int            g_portDoorRoomReady = 0;
+int            g_portDoorSkipped = 0;
+int            g_portSkipLoadMessage = 0;
+int            g_portWeaponCycleRequest = 0;
+int            g_portHud = 0;
 int            g_debugOpenItemboxFlag = 0;
 int            g_debugTextureViewerFlag = 0;
 int            g_debugTextureViewerOpen = 0;

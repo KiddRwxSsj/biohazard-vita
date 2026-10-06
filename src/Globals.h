@@ -501,13 +501,14 @@ extern int           g_DcDifficulty;           // DC_DIFFICULTY_*
 // its demo reels against the CRT rand; the PS1 DC uses its own LCG, so DC
 // sessions must roll the PS1 sequence for demo playback to line up. Every
 // game-code call site goes through the rand()/srand() entry points below. On
-// Windows the names are macros; on Linux the C library entry points forward to
-// the game functions so standard headers remain untouched.
+// Windows the names are macros; on Linux and the Vita the C library entry
+// points forward to the game functions so standard headers remain untouched.
 extern "C" {
 void re1_srand(unsigned int seed);
 int  re1_rand(void);
+unsigned int re1_rand_state(void);   // port: for code that must not move the stream (re1_srand restores)
 }
-#if !defined(__linux__)
+#if !defined(__linux__) && !defined(__vita__)
 #define rand(...)  re1_rand(__VA_ARGS__)
 #define srand(...) re1_srand(__VA_ARGS__)
 #endif
@@ -678,6 +679,54 @@ void DebugRoomChange_ApplyPendingPlacement(void); // DebugMenu.cpp - post room_t
 extern int           g_debugLoadSlot;             // quick access load: selected slot index (0-7)
 void DebugQuick_SaveSlot(int slot);               // DebugSaveLoad.cpp - write a full save to savedat<slot+1>.dat
 int  DebugQuick_LoadSlot(int slot);               // DebugSaveLoad.cpp - restore savedat<slot+1>.dat and arm the continue path; 0 = refused
+
+// Port-added quick save / quick load for a platform overlay (the Vita's
+// settings panel). The overlay only raises requests; game_loop services them
+// at the top of a gameplay frame through the same DebugQuick_* helpers and
+// quick-access load machine the F1 menu uses. Slot 99 is savedat100.dat, past
+// the nine files the save screen scans, so it never touches a player's slot.
+#define PORT_QUICK_SLOT_FIRST 99
+#define PORT_QUICK_SLOT_COUNT 3
+extern int           g_portQuickSlot;            // 0..PORT_QUICK_SLOT_COUNT-1, which one the requests mean
+extern int           g_portQuickSaveRequest;
+extern int           g_portQuickSaveResult;      // 1 saved, -1 refused, 0 nothing to report
+extern int           g_portQuickLoadRequest;
+extern DWORD         g_portGameplayFrame;        // bumped once per game_loop frame
+
+// Port-added: the camera a quick load was saved on, consumed by the next
+// room_set (RoomInit.cpp). -1 = none, start on camera 0 like the original.
+extern int           g_portRestoreCameraId;
+
+// Port-added quality-of-life switches, set by a platform overlay (the Vita's
+// settings panel). All default off, which is the original game.
+extern int           g_portAutoRun;              // run while pushing forward; hold run to walk (InputSystem.cpp)
+extern int           g_portSkipDoors;            // no door animation at all, black until the room is in (DoorSystem.cpp)
+extern int           g_portDoorRoomReady;        // room_transition_load: destination loaded, door may end
+extern int           g_portDoorSkipped;          // g_portSkipDoors latched per transition; game_loop skips the fade-in
+extern int           g_portSkipLoadMessage;      // next InitializeGame skips the "Loading game" message (one shot)
+extern int           g_portWeaponCycleRequest;   // +1 / -1 = equip the next / previous weapon, serviced by game_loop
+int port_cycle_equipped_weapon(int dir);          // MainMenu.cpp - 1 when a different weapon was equipped
+
+// Port-added gameplay HUD: the status screen's bottom row drawn in play, as
+// two widgets the player can move and scale (g_portHudLayout). The *_X/Y/W/H
+// values are each widget's box where the status screen draws it.
+#define PORT_HUD_STATUS 0x01                       // portrait + ECG
+#define PORT_HUD_WEAPON 0x02                       // equipped weapon and its count
+#define PORT_HUD_STATUS_X 0x08
+#define PORT_HUD_STATUS_Y 0x8C
+#define PORT_HUD_STATUS_W 0x80
+#define PORT_HUD_STATUS_H 0x28
+#define PORT_HUD_WEAPON_X 0x94
+#define PORT_HUD_WEAPON_Y 0x8E
+#define PORT_HUD_WEAPON_W 0x3C
+#define PORT_HUD_WEAPON_H 0x26
+struct PortHudWidget {
+    short x, y;          // top-left in the 320x240 game picture
+    short scale;         // percent of the status screen's size
+};
+extern int           g_portHud;
+extern PortHudWidget g_portHudLayout[2];           // MainMenu.cpp - [0] status, [1] weapon
+void port_hud_draw(int parts);                     // MainMenu.cpp
 
 // Room interaction state (0x00be9616-0x00be9618, adjacent to g_eventItemUsedFlag)
 extern unsigned char g_typewriter_state;               // 0x00be9616 - typewriter save-flow state machine
@@ -875,8 +924,8 @@ extern void*         g_RoomActionTail;              // 0x00d91bc0
 extern void*         g_pRoomActionEntry;               // 0x00d226a4
 
 // Room model record tables (populated by room_set from the RDT VB region)
-extern void*         g_omodel_table[8];      // 0x00d226b0 - room-object (omodel) records
-extern void*         g_item_model_table[8]; // 0x00d21360 - item model records (room pick-up 3D models)
+extern void*         g_omodel_table[14];     // 0x00d226b0 - room-object (omodel) records
+extern void*         g_item_model_table[16]; // 0x00d21360 - item model records (room pick-up 3D models)
 
 // Enemy model loading state (used by room_set and cmd_omodel_set)
 extern int           g_omodelCount;                    // 0x00ae9ef4 - object model count (cmd_omodel_set)

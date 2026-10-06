@@ -749,6 +749,41 @@ void menu_update_equipped_weapon(void)
     }
 }
 
+// Port-added: equip the next / previous weapon in the inventory without
+// opening it (g_portWeaponCycleRequest, serviced by game_loop). It takes the
+// same steps the menu takes when it closes on a new weapon - equip the slot,
+// menu_update_equipped_weapon for the id and sound bank, then the in-hand
+// model and animations - so the result is what equipping it there gives.
+//
+// A weapon is any item below the inventory's first ammo id, the 0x13b entry of
+// the category thresholds (0x0B, the clip, in the USA table). The Director's
+// Cut swaps its own table in (dc_apply_item_tables), so its weapons follow.
+int port_cycle_equipped_weapon(int dir)
+{
+    const unsigned char* slots = ITEM_SLOTS;
+    const int count = g_TotalHeldItems;
+    if (slots == NULL || count <= 0 || dir == 0) return 0;
+    const unsigned char firstAmmo = g_ItemImageLookupTable[0x13b];
+
+    unsigned char weapons[16];
+    int n = 0, cur = -1;
+    for (int i = 0; i < count && n < 16; ++i) {
+        const unsigned char id = slots[i * 2];
+        if (id == 0 || id >= firstAmmo) continue;
+        if (i + 1 == g_EquippedItemId) cur = n;
+        weapons[n++] = (unsigned char)(i + 1);
+    }
+    if (n == 0 || (n == 1 && cur == 0)) return 0;
+
+    const int next = (cur < 0) ? (dir > 0 ? 0 : n - 1) : (cur + (dir > 0 ? 1 : -1) + n) % n;
+    g_EquippedItemId = weapons[next];
+    menu_update_equipped_weapon();
+    LoadEquippedWeaponAnimation(g_playerEntity.equippedWeaponId, 0xE,
+                                (unsigned int)g_animationBuffer,
+                                (unsigned int)g_animObjectBuffer);
+    return 1;
+}
+
 // (0x00429cb0) - Update fading rect based on screen offset
 static void menu_update_fading_rect(void)
 {
@@ -2705,6 +2740,176 @@ LAB_0043849d:
     #undef EKG_S_R2
     #undef EKG_S_G2
     #undef EKG_S_B2
+}
+
+// ============================================================================
+// port_hud_draw (port-added)
+// The status screen's bottom row during gameplay, as two widgets: the portrait
+// and ECG panel, and the equipped weapon box with its count (g_portHud,
+// g_portHudLayout, Globals.h). It is the menu's own drawing, not a copy of its
+// look - the frame pieces from g_MenuFrameDataBlock, menu_draw_health_bar for
+// the face label and the ECG, menu_draw_inventory's equipped-slot block - drawn
+// at the menu's coordinates. Each widget's freshly queued commands are then
+// moved and scaled as a block (HudPlace), which is what lets the player put
+// them anywhere at any size without touching the menu routines themselves.
+// status.tim, statface.tim and the held-item icons stay loaded between menu
+// visits (TextureLoader.cpp), so it loads nothing.
+//
+// The menu draws with the screen offset at 0 (setMenuScreenOffset); gameplay
+// keeps it centred, so it is zeroed for the duration and restored, along with
+// the shared descriptor. menu_draw_health_bar rolls rand() for the waveform,
+// and the game's stream must not move because a HUD is on, so its state is
+// put back as well.
+// ============================================================================
+PortHudWidget g_portHudLayout[2] = {
+    { 6,   202, 80 },      // status: bottom left
+    { 266, 204, 80 },      // weapon: bottom right
+};
+
+static void HudFramePiece(short x, short y, unsigned short w, unsigned short h,
+                          unsigned char u, unsigned char v)
+{
+    g_TextureDesc.flags = 0x01000040;
+    g_TextureDesc.texturePage = 0x1c;
+    g_TextureDesc.clutX = 0;
+    g_TextureDesc.clutY = 0x1e4;
+    g_TextureDesc.screenX = x;
+    g_TextureDesc.screenY = y;
+    g_TextureDesc.width = w;
+    g_TextureDesc.height = h;
+    g_TextureDesc.texU = u;
+    g_TextureDesc.texV = v;
+    display_texture(&g_TextureDesc, 0x15, 0, 1);
+}
+
+static short HudMap(int v, int from, int to, float scale)
+{
+    const float f = (float)to + (float)(v - from) * scale;
+    return (short)(f >= 0.0f ? f + 0.5f : f - 0.5f);
+}
+
+// Move every command queued since `first` from the widget's menu position
+// (ax, ay) to its layout position, scaled about that corner. Quads keep their
+// inclusive right/bottom edge; lines are two points.
+static void HudPlace(int first, int ax, int ay, const PortHudWidget& w)
+{
+    const float scale = (float)w.scale / 100.0f;
+    for (int i = first; i < g_SpriteQueueCount; ++i) {
+        TextureDraw* c = &g_SpriteCommandBuffer[i];
+        if (c->type == 11) {
+            c->x0 = HudMap(c->x0, ax, w.x, scale);
+            c->y0 = HudMap(c->y0, ay, w.y, scale);
+            c->x1 = HudMap(c->x1, ax, w.x, scale);
+            c->y1 = HudMap(c->y1, ay, w.y, scale);
+        } else {
+            const short x0 = HudMap(c->x0, ax, w.x, scale);
+            const short y0 = HudMap(c->y0, ay, w.y, scale);
+            short x1 = (short)(HudMap(c->x1 + 1, ax, w.x, scale) - 1);
+            short y1 = (short)(HudMap(c->y1 + 1, ay, w.y, scale) - 1);
+            if (x1 < x0) x1 = x0;
+            if (y1 < y0) y1 = y0;
+            c->x0 = x0;
+            c->y0 = y0;
+            c->x1 = x1;
+            c->y1 = y1;
+        }
+    }
+}
+
+void port_hud_draw(int parts)
+{
+    if ((parts & (PORT_HUD_STATUS | PORT_HUD_WEAPON)) == 0) return;
+
+    const TextureDesc savedDesc = g_TextureDesc;
+    const short savedOffsetX = g_ScreenOffsetX;
+    const short savedOffsetY = g_ScreenOffsetY;
+    const unsigned int savedRand = re1_rand_state();
+
+    g_ScreenOffsetX = 0;
+    g_ScreenOffsetY = 0;
+
+    g_TextureDesc.colorMulR = 0x80;
+    g_TextureDesc.colorMulG = 0x80;
+    g_TextureDesc.colorMulB = 0x80;
+    g_TextureDesc.pivotX = 0;
+    g_TextureDesc.pivotY = 0;
+    unk_00be1180 = 0;
+
+    if ((parts & PORT_HUD_STATUS) != 0) {
+        const int first = g_SpriteQueueCount;
+
+        // Health frame: g_MenuFrameDataBlock entry {0x08, 0x8C, 0x80, 0x28, 0x00, 0xB8}.
+        HudFramePiece(PORT_HUD_STATUS_X, PORT_HUD_STATUS_Y, PORT_HUD_STATUS_W, PORT_HUD_STATUS_H,
+                      0x00, 0xB8);
+
+        // Portrait, as menu_draw_inventory 0x00464290.
+        g_TextureDesc.flags = 0x01000040;
+        g_TextureDesc.texturePage = 0x1c;
+        g_TextureDesc.screenX = 0x16;
+        g_TextureDesc.screenY = 0x92;
+        g_TextureDesc.width = 30;
+        g_TextureDesc.height = 30;
+        g_TextureDesc.clutY = 0x1e0;
+        g_TextureDesc.texU = (g_playerEntity.id & 1) << 5;
+        g_TextureDesc.texV = (g_playerEntity.id & 2) << 4;
+        display_texture(&g_TextureDesc, 10, 9, 1);
+
+        menu_draw_health_bar();
+        HudPlace(first, PORT_HUD_STATUS_X, PORT_HUD_STATUS_Y, g_portHudLayout[0]);
+    }
+
+    if ((parts & PORT_HUD_WEAPON) != 0) {
+        const int first = g_SpriteQueueCount;
+
+        // Equipped weapon frame: entry {0x94, 0x8E, 0x3C, 0x26, 0x84, 0xBA}.
+        HudFramePiece(PORT_HUD_WEAPON_X, PORT_HUD_WEAPON_Y, PORT_HUD_WEAPON_W, PORT_HUD_WEAPON_H,
+                      0x84, 0xBA);
+
+        // Equipped slot, as menu_draw_inventory 0x00463f20-0x00464090.
+        int slot = 10, pages = 1;
+        g_TextureDesc.flags = 0x01000040;
+        g_TextureDesc.clutX = 0;
+        g_TextureDesc.texturePage = 0x1c;
+        g_TextureDesc.screenX = 0xa0;
+        g_TextureDesc.screenY = 0x92;
+        g_TextureDesc.width = 0x28;
+        g_TextureDesc.height = 0x1e;
+        if (g_EquippedItemId == 0) {
+            g_TextureDesc.texU = 0;
+            g_TextureDesc.clutY = 0x1e0;
+            g_TextureDesc.texV = 0;
+        } else {
+            const unsigned char* item = ITEM_SLOTS + (g_EquippedItemId * 2 - 2);
+            g_TextureDesc.texU = 0x58;
+            g_TextureDesc.clutY = 0x1e4;
+            g_TextureDesc.texturePage = 0x1d;
+            g_TextureDesc.texV = g_ItemSlotIndices[g_EquippedItemId - 1] << 5;
+            if (item[0] < 0x6f) {
+                pages = 8;
+                slot = 1;
+            } else {
+                g_TextureDesc.texU = 0;
+                pages = 1;
+                slot = 0x1e;
+                g_TextureDesc.clutY = 0x1e0;
+                g_TextureDesc.texturePage = 0;
+                g_TextureDesc.texV = item[0] * 0x1e - 2;
+            }
+        }
+        display_texture(&g_TextureDesc, 10, slot, pages);
+
+        if (g_EquippedItemId != 0) {
+            const unsigned char* item = ITEM_SLOTS + (g_EquippedItemId * 2 - 2);
+            g_TextureDesc.texturePage = 0x1c;
+            display_item_qty(item[0], item[1], 9);
+        }
+        HudPlace(first, PORT_HUD_WEAPON_X, PORT_HUD_WEAPON_Y, g_portHudLayout[1]);
+    }
+
+    re1_srand(savedRand);
+    g_ScreenOffsetX = savedOffsetX;
+    g_ScreenOffsetY = savedOffsetY;
+    g_TextureDesc = savedDesc;
 }
 
 // ============================================================================

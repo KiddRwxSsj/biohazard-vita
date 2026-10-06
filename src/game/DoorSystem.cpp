@@ -485,6 +485,12 @@ static void DoorAnimInit(void)
 
     g_doorState = 3;                        // bit 0 running, bit 1 dispatch enabled
 
+    // Port: g_portSkipDoors. room_transition_load did not load a .dor for this
+    // door, so there is no header to relocate and no script to run.
+    if (g_portDoorSkipped != 0) {
+        return;
+    }
+
     // Zero the order table, camera matrix and command table blocks.
     memset(g_doorOrders, 0, sizeof(g_doorOrders));
     memset(&g_doorCameraMatrix, 0, sizeof(g_doorCameraMatrix));
@@ -1097,6 +1103,31 @@ static void DoorAnimLoop(void)
 
     while ((g_doorState & 1) != 0) {
 
+        // Port: g_portSkipDoors. No door at all - no scripts, no panels, no door
+        // sounds - just the black the animation opens on, held only until
+        // room_transition_load has the destination in, which is what the
+        // animation's length was covering. Leaves through the pad skip's exit,
+        // in the same frame: room_transition_load is already polling.
+        if (g_portDoorSkipped != 0) {
+            if (g_portDoorRoomReady != 0) {
+                g_SpriteAsyncFlag = 1;
+                g_doorState = 0;
+                break;
+            }
+            g_rect.textureId = 0;
+            g_rect.r = 0;
+            g_rect.g = 0;
+            g_rect.b = 0;
+            g_rect.x = -160;
+            g_rect.y = -120;
+            g_rect.w = 320;
+            g_rect.h = 240;
+            draw_rect(&g_rect, 0, 0);
+            Task_sleep(1);
+            g_doorFrameCount++;
+            continue;
+        }
+
         // Black out the screen for the first 3 frames (the door data is
         // loading - the room is black behind the animation).
         if (g_doorFrameCount >= 0 && g_doorFrameCount < 3) {
@@ -1212,7 +1243,11 @@ static void DoorAsyncTeardown(void)
 // ============================================================================
 static void DoorAnimTeardown(void)
 {
-    ExecAsync((void*)DoorAsyncTeardown);
+    // Port: a skipped door created no texture page or TMDs, so there is
+    // nothing to free - and the ExecAsync would cost a frame.
+    if (g_portDoorSkipped == 0) {
+        ExecAsync((void*)DoorAsyncTeardown);
+    }
     g_main_state_flags2 &= ~MSF2_SND_BUSY;
     g_fading_state = (short)0xFFFF;     // fade inactive (0x00444500)
     g_bGameActive = 2;
@@ -1429,6 +1464,10 @@ void room_transition_load(void)
 
     g_roomTransitionBusy   = 1;
     g_AttractModeIdleTimer = 1;
+    g_portDoorRoomReady    = 0;
+    // Latched once here: the overlay can flip g_portSkipDoors at any time, and
+    // the door task must not change its mind halfway through.
+    g_portDoorSkipped      = g_portSkipDoors;
 
     object_delete_00442170(0);
     SetScreenOffset(160, 120);
@@ -1448,7 +1487,9 @@ void room_transition_load(void)
     }
 
     load_room_sfx(g_nextRoomSfxId);
-    door_system_load_data();            // FUN_00412300 - load the .dor + start the texture page
+    if (g_portDoorSkipped == 0) {
+        door_system_load_data();        // FUN_00412300 - load the .dor + start the texture page
+    }
 
     // The original does:
     //     Task_execute(1, FUN_00444770);   // spawns the door-animation task
@@ -1528,6 +1569,7 @@ void room_transition_load(void)
     }
 
     g_AttractModeIdleTimer = 1;
+    g_portDoorRoomReady = 1;
     // Waits for the door-animation task to clear bit 0x4000000. That task is not
     // spawned yet, so nothing sets the bit and this falls straight through.
     while ((g_main_state_flags & MSF_ROOM_TRANSITION) != 0) {

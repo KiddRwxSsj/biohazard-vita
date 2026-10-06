@@ -329,6 +329,31 @@ void lab_slides_reset(void) {
 // Full room initialization: deletes old textures/objects, loads RDT, sets up
 // enemies, cameras, collision, sound, BGM, events, and player state.
 // ============================================================================
+// Port-added. After a quick load (DebugQuick_LoadSlot), come back on the camera
+// the save was made on instead of the original's camera 0. The id is checked
+// against the room's switch-zone table first: display_room_camera_bg walks it
+// without a bound, and a camera with no group of its own (a scripted cut) would
+// run off the end. Anything doubtful falls back to the original behaviour.
+static bool RestoreQuickLoadCamera(void)
+{
+    const int cam = g_portRestoreCameraId;
+    g_portRestoreCameraId = -1;
+    if (cam <= 0 || g_RdtPointer == NULL || cam >= g_RdtPointer->cameras_count) return false;
+
+    const CAM_SWITCH_ZONE* zone = (const CAM_SWITCH_ZONE*)g_RdtPointer->cam_switch_zones;
+    if (zone == NULL) return false;
+
+    for (int i = 0; i < 512; ++i, ++zone) {
+        if (zone->camFrom == cam) {
+            g_roomCameraId = (unsigned char)cam;
+            display_room_camera_bg();
+            return true;
+        }
+        if (zone->camFrom < 0 || zone->camFrom >= g_RdtPointer->cameras_count) break;
+    }
+    return false;
+}
+
 void room_set(void)
 {
     Entity* pPrevEntity;
@@ -669,11 +694,14 @@ void room_set(void)
 
     // 0x00477ef6: Camera setup
     if ((g_main_state_flags & MSF_CAMERA_LOCK) == 0) {
-        g_roomCameraId = 0;
-        check_camera_switch(1);
+        if (!RestoreQuickLoadCamera()) {
+            g_roomCameraId = 0;
+            check_camera_switch(1);
+        }
     } else {
         display_room_camera_bg();
     }
+    g_portRestoreCameraId = -1;   // one room only, whichever branch ran
 
     // 0x00477f26: Special case for the courtyard heliport
     if ((g_stageId == STAGE_COURTYARD) && (g_roomId == ROOM_HELIPORT)) {

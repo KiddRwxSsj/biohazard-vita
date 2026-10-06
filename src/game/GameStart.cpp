@@ -410,7 +410,14 @@ void InitializeGame(void)
     g_SpecialRoomLightDelta = 0;
     g_fading_counter = 0;
 
-    Task_execute(1, (void*)display_game_loading_message);
+    // Port: an overlay quick load drops straight into the room. The message task
+    // is the only thing the load waits on that the player sees, and nothing else
+    // depends on it having run (game_loop just waits for it to close).
+    if (g_portSkipLoadMessage != 0) {
+        g_portSkipLoadMessage = 0;
+    } else {
+        Task_execute(1, (void*)display_game_loading_message);
+    }
 
     LoadFile(GAME_DATA_ROOT "data\\bio_card.dat", g_loadDataDestPointer, 32);
 

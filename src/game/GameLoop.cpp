@@ -79,7 +79,13 @@ int game_loop(void)
             g_fading_counter = 0xE800;
         }
 
-        fade_update();
+        // Port: g_portSkipDoors. Coming out of a skipped door the room is shown
+        // as it is, not faded in from black. The latch is the door's own
+        // (room_transition_load), so a menu closing still fades as before.
+        if (g_portDoorSkipped == 0) {
+            fade_update();
+        }
+        g_portDoorSkipped = 0;
 
         g_SpecialRoomLightState = (short)g_int_008f8898;
         Task_sleep(1);
@@ -112,6 +118,59 @@ LAB_00480c33:
             check_itembox_state();
             check_typewriter_state();
             check_event_item_usage();
+
+            // Port: overlay quick save / quick load (Globals.h). Same gate as
+            // the debug quick access load below - no menu, no save screen, no
+            // load already in flight - plus a living player for the save.
+            ++g_portGameplayFrame;
+            if (g_portQuickSaveRequest != 0 || g_portQuickLoadRequest != 0) {
+                const bool idle = (g_openMenuFlag == 0) && (g_loadSaveStateFlag == 0) &&
+                                  ((g_main_state_flags & MSF_MENU_ACTIVE) == 0) &&
+                                  (g_debugLoadScreenState == 0);
+                if (g_portQuickSaveRequest != 0) {
+                    g_portQuickSaveRequest = 0;
+                    if (idle && (g_main_state_flags & MSF_PLAYER_DEAD) == 0) {
+                        DebugQuick_SaveSlot(PORT_QUICK_SLOT_FIRST + g_portQuickSlot);
+                        g_portQuickSaveResult = 1;
+                    } else {
+                        g_portQuickSaveResult = -1;
+                    }
+                }
+                if (g_portQuickLoadRequest != 0) {
+                    g_portQuickLoadRequest = 0;
+                    if (idle) {
+                        g_debugLoadSlot = PORT_QUICK_SLOT_FIRST + g_portQuickSlot;
+                        g_debugLoadScreenState = 1;
+                        g_portSkipLoadMessage = 1;
+                    }
+                }
+            }
+
+            // Port: the status-screen HUD (Globals.h). Not over a menu, a door, a
+            // death or the attract demo, which replays with the game's own input.
+            // Nor over a cutscene: the scripts raise MSF_INTENSITY_RAMP for the
+            // letterbox, and main_loop keeps drawing the bars until the
+            // intensity has ramped back down to 0x0F, so wait for both.
+            if ((g_portHud != 0) && (g_openMenuFlag == 0) && (g_debugMenuOpen == 0) &&
+                ((g_main_state_flags & (MSF_MENU_ACTIVE | MSF_PLAYER_DEAD | MSF_ROOM_TRANSITION |
+                                        MSF_INTENSITY_RAMP)) == 0) &&
+                ((unsigned char)g_spriteAnimIntensity <= 0x0F) &&
+                ((g_main_state_flags2 & MSF2_ATTRACT_DEMO) == 0)) {
+                port_hud_draw(g_portHud);
+            }
+
+            // Port: weapon switch without the inventory. Only from plain standing
+            // control - behaviour 0 under frame 0 - so the swap never lands in the
+            // middle of an aim, a shot, a stride or a scripted move.
+            if (g_portWeaponCycleRequest != 0) {
+                const int dir = g_portWeaponCycleRequest;
+                g_portWeaponCycleRequest = 0;
+                if ((g_openMenuFlag == 0) && ((g_main_state_flags & MSF_MENU_ACTIVE) == 0) &&
+                    ((g_main_state_flags & MSF_PLAYER_DEAD) == 0) &&
+                    (g_playerEntity.action_behavior == 0) && (g_playerEntity.animFrameId == 0)) {
+                    port_cycle_equipped_weapon(dir);
+                }
+            }
 
             // Debug: quick access load. Fade-out gate; restores the slot
             // picked in the debug menu's load list. The arming flag is only
@@ -502,7 +561,12 @@ switchD_00480ff4_caseD_2:
             g_int_008f8898 = (int)(short)g_SpecialRoomLightState;
             set_fading(2, 0xC00);
         } else {
-            set_fading(2, 0x600);
+            // Port: g_portSkipDoors. main_loop suspends task 0 for this whole
+            // fade, ~22 frames, and task 0 is the one about to load the room.
+            // The door animation hides the wait; without one it is just black.
+            if (g_portSkipDoors == 0) {
+                set_fading(2, 0x600);
+            }
             g_int_008f8898 = -1;
         }
 
