@@ -124,6 +124,67 @@ set(RE1_SOURCES
 )
 
 # ---------------------------------------------------------------------------
+# PS Vita (VitaSDK). Configure with the SDK's toolchain file:
+#   cmake -S . -B build/vita -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build/vita -j
+# Produces build/vita/residentevil.vpk. Game data goes in ux0:data/RE1/.
+# ---------------------------------------------------------------------------
+if(VITA)
+    include("${VITASDK}/share/vita.cmake" REQUIRED)
+
+    set(VITA_APP_NAME  "Resident Evil")
+    set(VITA_TITLEID   "RESI00001")
+    set(VITA_VERSION   "01.00")
+
+    list(APPEND RE1_SOURCES
+        src/platform/vita/main.cpp
+        src/platform/vita/platform.cpp
+        src/platform/vita/input.cpp
+        src/platform/vita/audio.cpp
+        src/platform/vita/video.cpp
+        src/platform/vita/config.cpp
+        src/platform/vita/stubs.cpp
+        src/platform/vita/settings.cpp
+        src/platform/vita/overlay.cpp
+        src/marni/MarniDX_Vita.cpp
+    )
+
+    add_executable(residentevil ${RE1_SOURCES})
+    target_include_directories(residentevil PRIVATE src)
+
+    # x86 char is signed and the decomp leans on it in its byte tables and
+    # file parsers; ARM defaults to unsigned.
+    target_compile_options(residentevil PRIVATE -w -fsigned-char -fno-strict-aliasing)
+
+    target_link_libraries(residentevil PRIVATE
+        avformat avcodec swresample avutil mp3lame mpg123
+        vitaGL vitashark SceShaccCgExt taihen_stub SceShaccCg_stub mathneon
+        SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub
+        SceCommonDialog_stub SceCtrl_stub SceAudio_stub ScePower_stub SceAvPlayer_stub SceTouch_stub
+        pthread m)
+
+    # ATTRIBUTE2=12 asks the shell for the extended memory budget, which the
+    # 160 MB newlib heap plus vitaGL's pools are sized against.
+    set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
+
+    vita_create_self(eboot.bin residentevil UNSAFE)
+
+    set(RE1_VPK_FILES)
+    foreach(f icon0.png livearea/contents/bg.png livearea/contents/startup.png
+              livearea/contents/template.xml)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vita/sce_sys/${f}")
+            list(APPEND RE1_VPK_FILES "vita/sce_sys/${f}" "sce_sys/${f}")
+        endif()
+    endforeach()
+
+    vita_create_vpk(residentevil.vpk ${VITA_TITLEID} eboot.bin
+        VERSION ${VITA_VERSION}
+        NAME "${VITA_APP_NAME}"
+        FILE ${RE1_VPK_FILES})
+    return()
+endif()
+
+# ---------------------------------------------------------------------------
 # Linux platform layer + renderer backend.
 # ---------------------------------------------------------------------------
 list(APPEND RE1_SOURCES
