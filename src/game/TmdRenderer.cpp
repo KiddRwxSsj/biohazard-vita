@@ -434,8 +434,12 @@ void FlushTmdObjects(void)
                 break;
             }
         }
+        // The USA aquarium has no per-texel blend to imitate: the PC draws the
+        // water as one even wash. Its twin only punched opaque triangles out of
+        // the tank. DC keeps the twin, it is what holds the DC shell solid.
         bool uniformBlend = (g_stageId % 5 == STAGE_MANSION_2F &&
-                             g_roomId == ROOM_FRONT_LESSON_ROOM);
+                             (g_roomId == ROOM_FRONT_LESSON_ROOM ||
+                              (g_roomId == ROOM_STUDY_2F && !g_bDcMode)));
 
         // Triangles are collected across every queued object and submitted only
         // after a per-triangle depth sort. The original inserts each TMD object
