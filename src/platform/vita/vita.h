@@ -38,6 +38,7 @@ struct VitaGameplaySettings {
     BOOL skipDoors;
     BOOL healthHud;         // status row: portrait + ECG
     BOOL ammoHud;           // status row: equipped weapon + count
+    BOOL hudAutoHide;       // fade the HUD out when nothing is happening
 };
 
 extern VitaGameplaySettings g_vitaGameplay;

@@ -18,7 +18,7 @@
 
 VitaVideoSettings g_vitaVideo = { VITA_ASPECT_4_3, FALSE, TRUE, 1.0f, 0 };
 BOOL g_vitaVideoDirty = FALSE;
-VitaGameplaySettings g_vitaGameplay = { FALSE, FALSE, FALSE, FALSE, FALSE };
+VitaGameplaySettings g_vitaGameplay = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
 
 // The layout MainMenu.cpp starts with, kept before config.ini overrides it so
 // EDIT HUD can put it back.
@@ -84,11 +84,13 @@ static const char kVitaSection[] =
     "; WeaponSwitch: flick the right stick to change weapon. SkipDoors: cut the\n"
     "; door animation out entirely. HealthHud: the status screen's portrait and\n"
     "; ECG in play. AmmoHud: its equipped weapon box with the round count.\n"
+    "; HudAutoHide: fade the HUD out when idle, back in on damage, shots or aim.\n"
     "AutoRun=0\n"
     "WeaponSwitch=0\n"
     "SkipDoors=0\n"
     "HealthHud=0\n"
     "AmmoHud=0\n"
+    "HudAutoHide=0\n"
     "; Where the two HUD widgets sit: x,y of the top-left corner in the 320x240\n"
     "; picture, then size in percent (50-150). Easier set from the overlay's\n"
     "; EDIT HUD, which drags and pinches them.\n"
@@ -152,6 +154,7 @@ void vita_load_video_settings(void)
     g_vitaGameplay.skipDoors    = ConfigFile_ReadInt("Vita", "SkipDoors", 0) ? TRUE : FALSE;
     g_vitaGameplay.healthHud    = ConfigFile_ReadInt("Vita", "HealthHud", 0) ? TRUE : FALSE;
     g_vitaGameplay.ammoHud      = ConfigFile_ReadInt("Vita", "AmmoHud", 0) ? TRUE : FALSE;
+    g_vitaGameplay.hudAutoHide  = ConfigFile_ReadInt("Vita", "HudAutoHide", 0) ? TRUE : FALSE;
 
     if (!s_haveDefaultHudLayout) {
         s_defaultHudLayout[0] = g_portHudLayout[0];
@@ -169,6 +172,7 @@ void vita_apply_gameplay_settings(void)
     g_portSkipDoors = g_vitaGameplay.skipDoors ? 1 : 0;
     g_portHud       = (g_vitaGameplay.healthHud ? PORT_HUD_STATUS : 0) |
                       (g_vitaGameplay.ammoHud ? PORT_HUD_WEAPON : 0);
+    g_portHudAutoHide = g_vitaGameplay.hudAutoHide ? 1 : 0;
 }
 
 // Write g_vitaVideo back into the [Vita] section, in place. Every other line,
@@ -180,7 +184,7 @@ void vita_save_video_settings(void)
     static const char* const kKeys[] = {
         "Aspect", "Filter", "VSync", "Gamma", "MSAA",
         "AutoRun", "WeaponSwitch", "SkipDoors", "HealthHud", "AmmoHud",
-        "HudStatus", "HudWeapon",
+        "HudStatus", "HudWeapon", "HudAutoHide",
     };
     const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
     char values[sizeof(kKeys) / sizeof(kKeys[0])][16];
@@ -198,6 +202,7 @@ void vita_save_video_settings(void)
         snprintf(values[10 + i], sizeof(values[10 + i]), "%d,%d,%d",
                  g_portHudLayout[i].x, g_portHudLayout[i].y, g_portHudLayout[i].scale);
     }
+    snprintf(values[12], sizeof(values[12]), "%d", g_vitaGameplay.hudAutoHide ? 1 : 0);
 
     const char* path = ConfigFile_Find();
     FILE* in = fopen(path, "r");

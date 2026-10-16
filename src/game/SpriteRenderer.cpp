@@ -139,6 +139,20 @@ void FlushSpriteCommandsRange(unsigned int minDepth, unsigned int maxDepth,
             MarniDrawLine(sx0, sy0, sx1, sy1, 1.0f, color);
             continue;
         }
+        // Port-only: flat colour rect, inclusive corners (SubmitSolidRect).
+        if (cmd->type == 13) {
+            int x = (int)floor(cmd->x0 * scaleX + 0.5f);
+            int y = (int)floor(cmd->y0 * scaleY + 0.5f);
+            int w = (int)floor((cmd->x1 + 1) * scaleX + 0.5f) - x;
+            int h = (int)floor((cmd->y1 + 1) * scaleY + 0.5f) - y;
+            float a = cmd->alpha < 0.0f ? 0.0f : (cmd->alpha > 1.0f ? 1.0f : cmd->alpha);
+            DWORD color = ((DWORD)(a * 255.0f) << 24) |
+                          ((DWORD)(cmd->r * 255.0f) << 16) |
+                          ((DWORD)(cmd->g * 255.0f) << 8) |
+                          (DWORD)(cmd->b * 255.0f);
+            if (w > 0 && h > 0) MarniDrawRect(x, y, w, h, color);
+            continue;
+        }
         if (cmd->type == 12) {
             // 4-corner textured quad (ground shadows / death blood pool).
             // The original rendered the quad through a Marni viewport, so its
@@ -479,6 +493,15 @@ int SubmitLine(short x0, short y0, short x1, short y1, unsigned short depth,
     cmd->v1 = 0;
 
     g_SpriteQueueCount++;
+    return 1;
+}
+
+// Port-only. Same queue and depth rule as SubmitLine; r/g/b/alpha are 0..1.
+int SubmitSolidRect(short x0, short y0, short x1, short y1, unsigned short depth,
+                    float r, float g, float b, float alpha)
+{
+    if (!SubmitLine(x0, y0, x1, y1, depth, r, g, b, alpha)) return 0;
+    g_SpriteCommandBuffer[g_SpriteQueueCount - 1].type = 13;
     return 1;
 }
 

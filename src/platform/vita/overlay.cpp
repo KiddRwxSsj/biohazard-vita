@@ -43,13 +43,15 @@ namespace {
 
 enum Item {
     ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA,
-    ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD, ITEM_EDIT_HUD,
+    ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
+    ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD,
     ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, ITEM_COUNT
 };
 
 const char* const kLabels[ITEM_COUNT] = {
     "ASPECT", "FILTER", "GAMMA", "MSAA",
-    "AUTO RUN", "WEAPON SWAP", "SKIP DOORS", "STATUS HUD", "WEAPON HUD", "EDIT HUD",
+    "AUTO RUN", "WEAPON SWAP", "SKIP DOORS", "STATUS HUD", "WEAPON HUD",
+    "HUD AUTO HIDE", "EDIT HUD",
     "SLOT", "QUICK SAVE", "QUICK LOAD", "DELETE", "CLOSE"
 };
 
@@ -61,7 +63,7 @@ const char* const kPageNames[PAGE_COUNT] = { "VIDEO", "GAMEPLAY", "SAVES" };
 const int kPageItems[PAGE_COUNT][8] = {
     { ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_CLOSE, -1, -1, -1 },
     { ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
-      ITEM_EDIT_HUD, ITEM_CLOSE, -1 },
+      ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD, ITEM_CLOSE },
     { ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, -1, -1, -1 },
 };
 
@@ -433,6 +435,7 @@ void Change(int item, int dir)
     case ITEM_SKIP_DOORS:  g_vitaGameplay.skipDoors    = !g_vitaGameplay.skipDoors;    break;
     case ITEM_HEALTH_HUD:  g_vitaGameplay.healthHud    = !g_vitaGameplay.healthHud;    break;
     case ITEM_AMMO_HUD:    g_vitaGameplay.ammoHud      = !g_vitaGameplay.ammoHud;      break;
+    case ITEM_HUD_AUTO_HIDE: g_vitaGameplay.hudAutoHide = !g_vitaGameplay.hudAutoHide; break;
     default:
         return;
     }
@@ -512,6 +515,7 @@ void ValueText(int item, char* out, size_t size)
     case ITEM_SKIP_DOORS:  snprintf(out, size, "%s", g_vitaGameplay.skipDoors ? "ON" : "OFF"); break;
     case ITEM_HEALTH_HUD:  snprintf(out, size, "%s", g_vitaGameplay.healthHud ? "ON" : "OFF"); break;
     case ITEM_AMMO_HUD:    snprintf(out, size, "%s", g_vitaGameplay.ammoHud ? "ON" : "OFF"); break;
+    case ITEM_HUD_AUTO_HIDE: snprintf(out, size, "%s", g_vitaGameplay.hudAutoHide ? "ON" : "OFF"); break;
     default:          out[0] = '\0'; break;
     }
 }

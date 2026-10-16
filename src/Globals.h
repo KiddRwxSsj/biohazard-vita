@@ -725,6 +725,7 @@ struct PortHudWidget {
     short scale;         // percent of the status screen's size
 };
 extern int           g_portHud;
+extern int           g_portHudAutoHide;          // MainMenu.cpp - fade the HUD out when idle
 extern PortHudWidget g_portHudLayout[2];           // MainMenu.cpp - [0] status, [1] weapon
 void port_hud_draw(int parts);                     // MainMenu.cpp
 

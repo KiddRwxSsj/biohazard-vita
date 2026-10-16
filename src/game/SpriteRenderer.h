@@ -185,6 +185,8 @@ int  SpriteQueue_CollectSceneDepths(unsigned int* out, int maxOut);
 int draw_texture(TextureDesc* texture, unsigned short depth);
 int SubmitLine(short x0, short y0, short x1, short y1, unsigned short depth,
                float r, float g, float b, float alpha);
+int SubmitSolidRect(short x0, short y0, short x1, short y1, unsigned short depth,
+                    float r, float g, float b, float alpha);
 int AddSprite(TextureDesc* texture, short depth, int tpage, int fade);
 int AddTintSprite(TextureDesc* texture, unsigned short fade);
 // transZ is the shadow's composed-matrix t[2] (view-space Z of the quad's

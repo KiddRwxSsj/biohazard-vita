@@ -2791,11 +2791,12 @@ static short HudMap(int v, int from, int to, float scale)
 // Move every command queued since `first` from the widget's menu position
 // (ax, ay) to its layout position, scaled about that corner. Quads keep their
 // inclusive right/bottom edge; lines are two points.
-static void HudPlace(int first, int ax, int ay, const PortHudWidget& w)
+static void HudPlace(int first, int ax, int ay, const PortHudWidget& w, float alpha)
 {
     const float scale = (float)w.scale / 100.0f;
     for (int i = first; i < g_SpriteQueueCount; ++i) {
         TextureDraw* c = &g_SpriteCommandBuffer[i];
+        c->alpha *= alpha;
         if (c->type == 11) {
             c->x0 = HudMap(c->x0, ax, w.x, scale);
             c->y0 = HudMap(c->y0, ay, w.y, scale);
@@ -2816,9 +2817,45 @@ static void HudPlace(int first, int ax, int ay, const PortHudWidget& w)
     }
 }
 
+int g_portHudAutoHide = 0;
+
+// Auto-hide: the HUD stays up while something is going on (health or the
+// equipped item's count changes, a weapon swap, holding aim) and fades out
+// once things have been quiet for a few seconds.
+static float HudFade(void)
+{
+    static int s_health = -1, s_item = -1, s_qty = -1;
+    static int s_idle = 0;
+    static float s_alpha = 1.0f;
+
+    const int item = g_EquippedItemId;
+    const int qty = item != 0 ? ITEM_SLOTS[item * 2 - 1] : 0;
+    const bool busy = (g_PlayerPadHeld & 0x08) != 0 || g_playerEntity.health != s_health ||
+                      item != s_item || qty != s_qty;
+    s_health = g_playerEntity.health;
+    s_item = item;
+    s_qty = qty;
+
+    if (busy) s_idle = 0;
+    else if (s_idle < 0x7fff) ++s_idle;
+
+    if (!g_portHudAutoHide) {
+        s_alpha = 1.0f;
+    } else if (s_idle < 90) {
+        s_alpha += 0.2f;
+        if (s_alpha > 1.0f) s_alpha = 1.0f;
+    } else {
+        s_alpha -= 0.05f;
+        if (s_alpha < 0.0f) s_alpha = 0.0f;
+    }
+    return s_alpha;
+}
+
 void port_hud_draw(int parts)
 {
     if ((parts & (PORT_HUD_STATUS | PORT_HUD_WEAPON)) == 0) return;
+    const float fade = HudFade();
+    if (fade <= 0.0f) return;
 
     const TextureDesc savedDesc = g_TextureDesc;
     const short savedOffsetX = g_ScreenOffsetX;
@@ -2852,10 +2889,14 @@ void port_hud_draw(int parts)
         g_TextureDesc.clutY = 0x1e0;
         g_TextureDesc.texU = (g_playerEntity.id & 1) << 5;
         g_TextureDesc.texV = (g_playerEntity.id & 2) << 4;
+        // statface's colour 0 is see-through and Chris's hair uses it. The
+        // status screen hides that with its black backdrop; in play the room
+        // showed through, so put the same black behind the face.
+        SubmitSolidRect(0x16, 0x92, 0x16 + 29, 0x92 + 29, 11, 0.0f, 0.0f, 0.0f, 1.0f);
         display_texture(&g_TextureDesc, 10, 9, 1);
 
         menu_draw_health_bar();
-        HudPlace(first, PORT_HUD_STATUS_X, PORT_HUD_STATUS_Y, g_portHudLayout[0]);
+        HudPlace(first, PORT_HUD_STATUS_X, PORT_HUD_STATUS_Y, g_portHudLayout[0], fade);
     }
 
     if ((parts & PORT_HUD_WEAPON) != 0) {
@@ -2903,7 +2944,7 @@ void port_hud_draw(int parts)
             g_TextureDesc.texturePage = 0x1c;
             display_item_qty(item[0], item[1], 9);
         }
-        HudPlace(first, PORT_HUD_WEAPON_X, PORT_HUD_WEAPON_Y, g_portHudLayout[1]);
+        HudPlace(first, PORT_HUD_WEAPON_X, PORT_HUD_WEAPON_Y, g_portHudLayout[1], fade);
     }
 
     re1_srand(savedRand);
