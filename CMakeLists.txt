@@ -170,7 +170,7 @@ if(VITA)
     vita_create_self(eboot.bin residentevil UNSAFE)
 
     set(RE1_VPK_FILES)
-    foreach(f icon0.png livearea/contents/bg.png livearea/contents/startup.png
+    foreach(f icon0.png pic0.png livearea/contents/bg.png livearea/contents/startup.png
               livearea/contents/template.xml)
         if(EXISTS "${CMAKE_SOURCE_DIR}/vita/sce_sys/${f}")
             list(APPEND RE1_VPK_FILES "vita/sce_sys/${f}" "sce_sys/${f}")

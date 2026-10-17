@@ -15,3 +15,5 @@ dist/
 # so it is no longer tracked; re1.lock is the single-instance guard.
 config.ini
 re1.lock
+!vita/sce_sys/**/*.png
+!screenshots/*.png
