@@ -155,6 +155,8 @@ struct TmdTri {
     int   otDepth; // the ordering-table depth its object was queued at. Only
                    // used to break exact `depth` ties - see the sort below.
     unsigned int key;  // port-only: finds this triangle again next tick (TmdInterp)
+    bool  wash;        // port-only: one of the aquarium's uniform-wash triangles (see the sort)
+    float sortDepth;   // `depth`, or for a wash triangle the whole wash's farthest depth
 };
 static TmdTri g_tmdTris[TMD_MAX_TRIS_COLLECT];
 static int    g_tmdTriOrder[TMD_MAX_TRIS_COLLECT];
@@ -659,6 +661,30 @@ void FlushTmdObjects(void)
             // note on renderStateModelActive above).
             if (knockTex != MARNI_NULL_HANDLE && !renderStateModelActive)
                 unlit = false;
+#ifdef RE1_AUTODOOR
+            if (uniformBlend) {
+                static int s_logged = 0;
+                if (s_logged < 40) {
+                    ++s_logged;
+                    FILE* lf = fopen("ux0:data/RE1/aquarium.log", "a");
+                    if (lf) {
+                        fprintf(lf, "obj %d/%d slot=%p rs=%d bg=%.4f alpha=%.3f unlit=%d tex=%u prim=%d list=%d vtx=%d ot=%d flags80=%08X\n",
+                                i, queued, (void*)e->slot, e->slot == g_renderStateTMD,
+                                *(float*)(e->objData + 0x68), triAlpha, (int)unlit, (unsigned)tex,
+                                primType, listCount, vtxCount, e->depth, *(DWORD*)(e->objData + 0x80));
+                        fclose(lf);
+                    }
+                }
+            }
+#endif
+
+            // The aquarium's opaque twin (the render-state copy, a separate
+            // object with its own matrix) covers the shell triangle for
+            // triangle, but its Z can come out a few ULPs behind the shell's.
+            // The wash below writes depth, so without a nudge the twin fails
+            // LEQUAL and the shell's 50% coat shows through the tank's base.
+            // 4 view units in front is far below anything visible.
+            const float zBias = (uniformBlend && e->slot == g_renderStateTMD) ? 4.0f : 0.0f;
 
             // Transform + project + light every vertex
             // (heap-allocate per object; vertex counts are small)
@@ -801,15 +827,15 @@ void FlushTmdObjects(void)
                     const float* v0 = vbuf + i0 * 11;
                     const float* v1 = vbuf + i1 * 11;
                     const float* v2 = vbuf + i2 * 11;
-                    o[0]  = x0; o[1]  = y0; o[2]  = TmdDepthNdc(vzArr[i0]);
+                    o[0]  = x0; o[1]  = y0; o[2]  = TmdDepthNdc(vzArr[i0] - zBias);
                     o[3]  = vzArr[i0];
                     o[4]  = v0[9];  o[5]  = v0[10];
                     o[6]  = cr[i0]; o[7]  = cg[i0]; o[8]  = cb[i0]; o[9]  = triAlpha;
-                    o[10] = x1; o[11] = y1; o[12] = TmdDepthNdc(vzArr[i1]);
+                    o[10] = x1; o[11] = y1; o[12] = TmdDepthNdc(vzArr[i1] - zBias);
                     o[13] = vzArr[i1];
                     o[14] = v1[9];  o[15] = v1[10];
                     o[16] = cr[i1]; o[17] = cg[i1]; o[18] = cb[i1]; o[19] = triAlpha;
-                    o[20] = x2; o[21] = y2; o[22] = TmdDepthNdc(vzArr[i2]);
+                    o[20] = x2; o[21] = y2; o[22] = TmdDepthNdc(vzArr[i2] - zBias);
                     o[23] = vzArr[i2];
                     o[24] = v2[9];  o[25] = v2[10];
                     o[26] = cr[i2]; o[27] = cg[i2]; o[28] = cb[i2]; o[29] = triAlpha;
@@ -818,6 +844,8 @@ void FlushTmdObjects(void)
                     t3->alpha = triAlpha;
                     t3->otDepth = e->depth;
                     t3->key = TmdInterpKey(e->objData, pIdx, t);
+                    t3->wash = uniformBlend && triAlpha < 0.999f;
+                    t3->sortDepth = t3->depth;
                     g_tmdTriOrder[collected] = collected;
                     collected++;
 
@@ -850,6 +878,8 @@ void FlushTmdObjects(void)
                         k3->alpha   = triAlpha;
                         k3->otDepth = e->depth;
                         k3->key     = TmdInterpKey(e->objData, pIdx, t + 2);
+                        k3->wash    = false;
+                        k3->sortDepth = k3->depth;
                         g_tmdTriOrder[collected] = collected;
                         collected++;
                     }
@@ -881,14 +911,60 @@ void FlushTmdObjects(void)
         // wash first, opaque over the top, punched texels keeping the wash. The
         // collection index is the last resort, so the whole order is
         // deterministic frame to frame.
+        //
+        // Port: the aquarium's wash (uniformBlend above). The tank is a glass
+        // shell with the water volume inside it, both translucent, and drawn
+        // back to front every pane the eye looks through adds another coat -
+        // the darker triangles where the shell's panes overlap the water's.
+        // The PC shows one even coat. So the wash triangles are drawn as one
+        // block, at the place in the order of the farthest of them, nearest
+        // first and writing depth: whatever is behind the nearest pane fails
+        // the depth test, and every pixel is washed exactly once.
+        {
+            float washFar = -1.0f;
+            for (int k = 0; k < collected; k++) {
+                if (g_tmdTris[k].wash && g_tmdTris[k].depth > washFar) washFar = g_tmdTris[k].depth;
+            }
+            if (washFar >= 0.0f) {
+                for (int k = 0; k < collected; k++) {
+                    if (g_tmdTris[k].wash) g_tmdTris[k].sortDepth = washFar;
+                }
+            }
+        }
         std::sort(g_tmdTriOrder, g_tmdTriOrder + collected, [](int a, int b) {
             const TmdTri& ta = g_tmdTris[a];
             const TmdTri& tb = g_tmdTris[b];
+            if (ta.sortDepth != tb.sortDepth) return ta.sortDepth > tb.sortDepth;
+            if (ta.wash && tb.wash && ta.depth != tb.depth) return ta.depth < tb.depth;
             if (ta.depth != tb.depth)     return ta.depth > tb.depth;
             if (ta.otDepth != tb.otDepth) return ta.otDepth > tb.otDepth;
             return a < b;
         });
 
+#ifdef RE1_AUTODOOR
+        // Test build: one frame of the aquarium, sorted, for offline raster.
+        if (uniformBlend) {
+            static int s_dumpFrames = 0;
+            if (++s_dumpFrames == 90) {
+                extern void MarniVita_DumpTexture(MarniHandle h, const char* path);
+                FILE* df = fopen("ux0:data/RE1/aqdump.txt", "w");
+                if (df) {
+                    fprintf(df, "%d\n", collected);
+                    for (int k = 0; k < collected; k++) {
+                        const TmdTri* t3 = &g_tmdTris[g_tmdTriOrder[k]];
+                        fprintf(df, "%u %d %f %f", (unsigned)t3->tex, (int)t3->wash, t3->alpha, t3->sortDepth);
+                        for (int f = 0; f < TMD_TRI_FLOATS; f++) fprintf(df, " %f", t3->v[f]);
+                        fprintf(df, "\n");
+                        char tp[64];
+                        snprintf(tp, sizeof(tp), "ux0:data/RE1/tex%u.bin", (unsigned)t3->tex);
+                        FILE* ef = fopen(tp, "rb");
+                        if (ef) fclose(ef); else MarniVita_DumpTexture((MarniHandle)t3->tex, tp);
+                    }
+                    fclose(df);
+                }
+            }
+        }
+#endif
         static float triVerts[TMD_MAX_TRIS_FLUSH * TMD_TRI_FLOATS];
         static float triPrev[TMD_MAX_TRIS_FLUSH * TMD_TRI_FLOATS];
         int   triCount = 0;
@@ -906,12 +982,12 @@ void FlushTmdObjects(void)
 
         for (int k = 0; k < collected; k++) {
             const TmdTri* t3 = &g_tmdTris[g_tmdTriOrder[k]];
-            const bool triWriteThis = t3->alpha >= 0.999f;
+            const bool triWriteThis = t3->alpha >= 0.999f || t3->wash;
 
             // Every scene sprite farther than this triangle has to be on
             // screen before it. The batch in flight is behind them too, so it
             // goes down first.
-            while (maskIdx < maskCount && (float)maskDepths[maskIdx] > t3->depth) {
+            while (maskIdx < maskCount && (float)maskDepths[maskIdx] > t3->sortDepth) {
                 if (triCount > 0) drawBatch();
                 FlushSpriteCommandsRange(maskDepths[maskIdx], maskCursor, SPRITE_CLASS_SCENE);
                 maskCursor = maskDepths[maskIdx];
