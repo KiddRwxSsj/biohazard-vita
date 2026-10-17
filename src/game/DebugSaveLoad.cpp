@@ -118,6 +118,11 @@ static void DebugRestoreSaveBlock(const char* fileBuffer, int fileSize)
 
         InstallPadDefaultBindings();
     }
+
+#if defined(__vita__)
+    // Same as RestoreSaveBlock: the console keeps its own pad layout.
+    memcpy(g_JoyRemapTbl[1], liveJoyRemap, 0x80);
+#endif
 }
 
 // Assemble the full 0xA82 save file image. Mirror of STATE_PERFORM_SAVE's

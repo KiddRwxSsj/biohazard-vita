@@ -776,6 +776,13 @@ static void RestoreSaveBlock(const char* fileBuffer, int fileSize)
         // recognised and left as it was saved.
         InstallPadDefaultBindings();
     }
+
+#if defined(__vita__)
+    // A save can come from a PC install or another release, and its pad table
+    // was laid out for that machine's controller. The Vita's buttons are fixed,
+    // so the layout config.ini gave this session stays.
+    memcpy(g_JoyRemapTbl[1], liveJoyRemap, 0x80);
+#endif
 }
 
 // ============================================================================
