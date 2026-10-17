@@ -203,6 +203,59 @@ static void ComposeOverlayRoot(void)
     s_overlayRoot = s_overlayRootBuf;
 }
 
+// Mod folders (config.ini [Mods] Load), searched before the mode overlay and
+// the base tree. Each one mirrors the asset tree (stage1/, data/, movie/ ...)
+// and only carries what it replaces. Earlier names in the list win.
+#define MAX_ASSET_MODS 8
+static char s_modNames[MAX_ASSET_MODS][64];
+static char s_modRoots[MAX_ASSET_MODS][260];
+static int  s_modCount = 0;
+
+static void ComposeModRoots(void)
+{
+    for (int i = 0; i < s_modCount; i++) {
+        if (s_base[0] != '\0') {
+            sprintf_s(s_modRoots[i], sizeof(s_modRoots[i]), "%s%cmods%c%s%c",
+                      s_base, PATH_SEP, PATH_SEP, s_modNames[i], PATH_SEP);
+        } else {
+#if !defined(_WIN32)
+            sprintf_s(s_modRoots[i], sizeof(s_modRoots[i]), "./assets/mods/%s/", s_modNames[i]);
+#elif defined(_DEBUG)
+            sprintf_s(s_modRoots[i], sizeof(s_modRoots[i]), ".\\assets\\mods\\%s\\", s_modNames[i]);
+#else
+            sprintf_s(s_modRoots[i], sizeof(s_modRoots[i]), ".\\mods\\%s\\", s_modNames[i]);
+#endif
+        }
+    }
+}
+
+void SetAssetMods(const char* list)
+{
+    s_modCount = 0;
+    if (list == NULL) return;
+    const char* p = list;
+    while (*p != '\0' && s_modCount < MAX_ASSET_MODS) {
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        const char* end = p;
+        while (*end != '\0' && *end != ',') end++;
+        const char* last = end;
+        while (last > p && (last[-1] == ' ' || last[-1] == '\t')) last--;
+        size_t n = (size_t)(last - p);
+        if (n > 0 && n < sizeof(s_modNames[0])) {
+            memcpy(s_modNames[s_modCount], p, n);
+            s_modNames[s_modCount][n] = '\0';
+            s_modCount++;
+        }
+        p = end;
+    }
+    ComposeModRoots();
+}
+
+int GetAssetModCount(void)
+{
+    return s_modCount;
+}
+
 void SetAssetMode(const char* mode)
 {
     if (mode == NULL || mode[0] == '\0') {
@@ -237,6 +290,7 @@ void SetAssetBase(const char* base)
     }
     ComposeAssetRoot();
     ComposeOverlayRoot();
+    ComposeModRoots();
 }
 
 const char* GetAssetBase(void)
@@ -348,6 +402,17 @@ const char* ResolveAssetRoot(const char* path, char* out, size_t outSize)
     if (match == NULL) return path; // Not an asset-rooted path.
 
     const char* tail = path + matchLen;
+
+    for (int i = 0; i < s_modCount; i++) {
+        char candidate[260];
+        if (sprintf_s(candidate, sizeof(candidate), "%s%s", s_modRoots[i], tail) < 0) continue;
+        char probeBuf[260];
+        const char* probe = plat_normalize_path(candidate, probeBuf, sizeof(probeBuf));
+        FILE* fp = fopen(probe, "rb");
+        if (fp == NULL) continue;
+        fclose(fp);
+        if (sprintf_s(out, outSize, "%s", candidate) >= 0) return out;
+    }
 
     // Content-mode overlay first (config.ini [Game] Mode). A non-OG mode ships
     // only the files it changes or adds, so a miss here is the normal case and

@@ -48,6 +48,13 @@ Ps1EndingCredits=0
 ; staff rolls, DMF and DME) be skipped with the usual buttons like any other FMV.
 SkipUnskippableFmv=0
 
+[Mods]
+; Folders under mods/ (next to USA/) to load, comma separated, first one wins
+; when two replace the same file. A mod mirrors the game's tree and holds only
+; what it changes, e.g. mods/MyRooms/stage1/room1060.rdt or
+; mods/Movies/movie/capcom.mp4. Leave empty for none.
+Load=
+
 [Debug]
 ; Master switch for the port-added debug features: F1 debug menu, F6
 ; texture viewer, F8 collision overlay. 0 = off, 1 = on.

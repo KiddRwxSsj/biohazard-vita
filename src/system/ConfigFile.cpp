@@ -521,6 +521,8 @@ BOOL ConfigFile_Load(void)
     }
     // OG uses no overlay; every other mode overlays a folder of its own name.
     SetAssetMode(g_GameMode == GAME_MODE_OG ? "" : GameModeName(g_GameMode));
+    char mods[256];
+    SetAssetMods(ReadValue(path, "Mods", "Load", mods, sizeof(mods)) ? mods : NULL);
     g_bPs1EndingCredits = ReadInt(path, "Game", "Ps1EndingCredits", 0) != 0;
     // JPN FMV subtitle overlay. Off by default: the assets only exist in the
     // JPN tree, and the USA build has no equivalent.

@@ -111,6 +111,14 @@ void         SetAssetMode(const char* mode);
 // The active overlay's folder name, "" when none (OG).
 const char*  GetAssetModeName(void);
 
+// Mods (config.ini [Mods] Load): a comma list of folder names under
+// "<base>/mods/". Each mirrors the asset tree with only the files it replaces,
+// and is searched ahead of the mode overlay and the base tree, first name
+// first. Textures (.tim/.pix/.pak), rooms (.rdt), sound and movies all go
+// through here, so any of them can be swapped.
+void         SetAssetMods(const char* list);
+int          GetAssetModCount(void);
+
 // Rewrites whichever known asset-root form a path was compiled with (debug
 // ".\assets\USA\" or retail ".\usa\") to the current runtime root, writing the
 // result into `out` (outSize bytes) and returning `out`. Returns `path`
