@@ -26,6 +26,7 @@ struct VitaVideoSettings {
     BOOL  vsync;
     float gamma;            // 1.0 = untouched
     int   msaa;             // 0, 2 or 4
+    BOOL  fps60;            // in-between frame per tick, see MarniDX_Vita.cpp
 };
 
 extern VitaVideoSettings g_vitaVideo;

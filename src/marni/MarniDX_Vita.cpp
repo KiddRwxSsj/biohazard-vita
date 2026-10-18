@@ -229,9 +229,9 @@ static void ApplySampler(MarniSampler sampler)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 }
 
-static void DrawBatch(MarniDX::Impl* p, const float* verts, int vertexCount,
-                      MarniHandle tex, MarniSampler sampler, MarniBlend blend,
-                      bool depthTest, bool depthWrite, bool persp)
+static void DrawBatchNow(MarniDX::Impl* p, const float* verts, int vertexCount,
+                         MarniHandle tex, MarniSampler sampler, MarniBlend blend,
+                         bool depthTest, bool depthWrite, bool persp)
 {
     if (p == nullptr || !p->ready || p->program == 0 || vertexCount <= 0) return;
 
@@ -265,6 +265,151 @@ static void DrawBatch(MarniDX::Impl* p, const float* verts, int vertexCount,
     glVertexAttribPointer(ATTR_UV,  2, GL_FLOAT, GL_FALSE, stride, verts + 4);
     glVertexAttribPointer(ATTR_COL, 4, GL_FLOAT, GL_FALSE, stride, verts + 6);
     glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+}
+
+// ---------------------------------------------------------------------------
+// 60 FPS
+//
+// The game still ticks at 30 Hz. While [Vita] FrameRate=60 is on and the game
+// is in play, a tick's draws are recorded instead of drawn, and Present plays
+// the list back twice: once with every 3D triangle halfway between where it
+// was last tick and where it is now (TmdRenderer hands the old corners over in
+// g_portInterpPrev), then as the game drew it. Sprites, backgrounds and the
+// HUD are the same in both. The in-between picture costs half a tick of lag,
+// the same trade REuncap makes on the PC.
+// ---------------------------------------------------------------------------
+
+struct InterpOp {
+    bool  clear;
+    float rgba[4];
+    int   first;        // float offset in s_recVerts
+    int   prevFirst;    // -1: nothing to blend
+    int   count;        // vertices
+    MarniHandle  tex;
+    MarniSampler sampler;
+    MarniBlend   blend;
+    bool  depthTest, depthWrite, persp;
+};
+
+static bool   s_recording = false;
+static DWORD  s_recFrame  = 0;
+static InterpOp* s_recOps = nullptr;
+static int    s_recOpCount = 0, s_recOpCap = 0;
+static float* s_recVerts  = nullptr;
+static int    s_recVertCount = 0, s_recVertCap = 0;   // in floats
+static float* s_lerpVerts = nullptr;
+static int    s_lerpCap   = 0;
+
+static InterpOp* RecordOp(void)
+{
+    if (s_recOpCount == s_recOpCap) {
+        int cap = s_recOpCap ? s_recOpCap * 2 : 256;
+        InterpOp* grown = (InterpOp*)realloc(s_recOps, (size_t)cap * sizeof(InterpOp));
+        if (grown == nullptr) return nullptr;
+        s_recOps = grown;
+        s_recOpCap = cap;
+    }
+    InterpOp* op = &s_recOps[s_recOpCount++];
+    memset(op, 0, sizeof(*op));
+    op->prevFirst = -1;
+    return op;
+}
+
+static int RecordVerts(const float* v, int floats)
+{
+    if (s_recVertCount + floats > s_recVertCap) {
+        int cap = s_recVertCap ? s_recVertCap : 65536;
+        while (cap < s_recVertCount + floats) cap *= 2;
+        float* grown = (float*)realloc(s_recVerts, (size_t)cap * sizeof(float));
+        if (grown == nullptr) return -1;
+        s_recVerts = grown;
+        s_recVertCap = cap;
+    }
+    int at = s_recVertCount;
+    memcpy(s_recVerts + at, v, (size_t)floats * sizeof(float));
+    s_recVertCount += floats;
+    return at;
+}
+
+static void DrawBatch(MarniDX::Impl* p, const float* verts, int vertexCount,
+                      MarniHandle tex, MarniSampler sampler, MarniBlend blend,
+                      bool depthTest, bool depthWrite, bool persp)
+{
+    if (!s_recording) {
+        DrawBatchNow(p, verts, vertexCount, tex, sampler, blend, depthTest, depthWrite, persp);
+        return;
+    }
+    InterpOp* op = RecordOp();
+    if (op == nullptr) return;
+    op->first = RecordVerts(verts, vertexCount * 10);
+    if (op->first < 0) { --s_recOpCount; return; }
+    if (persp && g_portInterpPrev != nullptr)
+        op->prevFirst = RecordVerts(g_portInterpPrev, vertexCount * 10);
+    op->count = vertexCount;
+    op->tex = tex;
+    op->sampler = sampler;
+    op->blend = blend;
+    op->depthTest = depthTest;
+    op->depthWrite = depthWrite;
+    op->persp = persp;
+}
+
+static void ClearNow(MarniDX::Impl* p, float r, float g, float b, float a);
+
+// Blend each triangle's corners toward last tick by (1 - t). A triangle that
+// moved further than a believable step in one tick teleported (a cut, a warp,
+// a respawn), so it is drawn where it is now.
+static const float* LerpOp(MarniDX::Impl* p, const InterpOp* op, float t)
+{
+    const float* cur = s_recVerts + op->first;
+    if (op->prevFirst < 0 || t >= 1.0f) return cur;
+    const float* prev = s_recVerts + op->prevFirst;
+
+    const int floats = op->count * 10;
+    if (floats > s_lerpCap) {
+        float* grown = (float*)realloc(s_lerpVerts, (size_t)floats * sizeof(float));
+        if (grown == nullptr) return cur;
+        s_lerpVerts = grown;
+        s_lerpCap = floats;
+    }
+    memcpy(s_lerpVerts, cur, (size_t)floats * sizeof(float));
+
+    const float maxStep = (float)p->width * 0.15f;
+    for (int tri = 0; tri + 3 <= op->count; tri += 3) {
+        bool jump = false;
+        for (int c = 0; c < 3 && !jump; ++c) {
+            const float* a = cur + (tri + c) * 10;
+            const float* b = prev + (tri + c) * 10;
+            jump = fabsf(a[0] - b[0]) > maxStep || fabsf(a[1] - b[1]) > maxStep ||
+                   fabsf(a[3] - b[3]) > 2500.0f;
+        }
+        if (jump) continue;
+        for (int c = 0; c < 3; ++c) {
+            float* d = s_lerpVerts + (tri + c) * 10;
+            const float* b = prev + (tri + c) * 10;
+            for (int k = 0; k < 4; ++k) d[k] = b[k] + (d[k] - b[k]) * t;
+        }
+    }
+    return s_lerpVerts;
+}
+
+static void Replay(MarniDX::Impl* p, float t)
+{
+    for (int i = 0; i < s_recOpCount; ++i) {
+        const InterpOp* op = &s_recOps[i];
+        if (op->clear) {
+            ClearNow(p, op->rgba[0], op->rgba[1], op->rgba[2], op->rgba[3]);
+            continue;
+        }
+        DrawBatchNow(p, LerpOp(p, op, t), op->count, op->tex, op->sampler, op->blend,
+                     op->depthTest, op->depthWrite, op->persp);
+    }
+}
+
+static void ResetRecording(void)
+{
+    s_recOpCount = 0;
+    s_recVertCount = 0;
 }
 
 static inline void ExpandVertex(float* dst, const float* src, bool hasZ, bool hasW)
@@ -403,6 +548,19 @@ void MarniDX::Clear(float r, float g, float b, float a)
     Impl* p = m_pImpl;
     if (p == nullptr || !p->ready) return;
 
+    if (s_recording) {
+        InterpOp* op = RecordOp();
+        if (op != nullptr) {
+            op->clear = true;
+            op->rgba[0] = r; op->rgba[1] = g; op->rgba[2] = b; op->rgba[3] = a;
+        }
+        return;
+    }
+    ClearNow(p, r, g, b, a);
+}
+
+static void ClearNow(MarniDX::Impl* p, float r, float g, float b, float a)
+{
     // Clear the whole panel so the pillarbox bars stay black, then scissor the
     // game colour into the box. Depth mask must be on or the depth clear is
     // silently skipped (see the note in MarniDX_GL.cpp).
@@ -427,11 +585,27 @@ void MarniDX::Present()
     Impl* p = m_pImpl;
     if (p == nullptr || !p->ready) return;
 
+    if (s_recording) {
+        Replay(p, 0.5f);
+        SetPixelSpace(p, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
+        vita_overlay_draw(this);
+        ApplyGameViewport(p);
+        vglSwapBuffers(GL_FALSE);
+        Replay(p, 1.0f);
+        s_recording = false;
+        ResetRecording();
+    }
+
     vita_overlay_before_draw(this);
     SetPixelSpace(p, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
     vita_overlay_draw(this);
     ApplyGameViewport(p);
     vglSwapBuffers(GL_FALSE);
+
+    // Only frames game_loop drew get the in-between picture; menus, movies and
+    // the title present as they always did.
+    s_recording = g_portFrameInterp != 0 && g_portGameplayFrame != s_recFrame;
+    s_recFrame = g_portGameplayFrame;
 
     // Between frames is the one place a box change cannot split a picture:
     // the next frame's sprites are scaled against the new backbuffer size.
@@ -654,6 +828,13 @@ BOOL MarniDX::CaptureBackbufferToRGBA(void** outPixels, DWORD* outWidth, DWORD* 
     Impl* p = m_pImpl;
     if (p == nullptr || !p->ready || outPixels == nullptr) return FALSE;
 
+    // Mid-frame while recording, the backbuffer holds nothing of this tick yet.
+    if (s_recording) {
+        Replay(p, 1.0f);
+        s_recording = false;
+        ResetRecording();
+    }
+
     const size_t pitch = (size_t)p->width * 4;
     unsigned char* buf = (unsigned char*)malloc(pitch * p->height);
     if (buf == nullptr) return FALSE;
@@ -744,7 +925,8 @@ void MarniVita_ApplyVideoSettings(void)
     vita_game_box(&p->offX, &p->offY, &p->width, &p->height);
     ApplyGameViewport(p);
     glUniform1f(p->uGamma, 1.0f / g_vitaVideo.gamma);
-    vglWaitVblankStart(g_vitaVideo.vsync ? GL_TRUE : GL_FALSE);
+    // Two pictures per tick only pace out evenly on the vblank.
+    vglWaitVblankStart((g_vitaVideo.vsync || g_portFrameInterp) ? GL_TRUE : GL_FALSE);
 
     // Same bookkeeping the WM_SIZE path does on the PC builds.
     CMarniDirect3D* d3d = (CMarniDirect3D*)g_pMarniDirect3D;

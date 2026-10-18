@@ -90,7 +90,7 @@ int main(int, char**)
     g_bFullScreen = TRUE;
     g_dwScreenWidth  = (DWORD)boxW;
     g_dwScreenHeight = (DWORD)boxH;
-    vglWaitVblankStart(g_vitaVideo.vsync ? GL_TRUE : GL_FALSE);
+    vglWaitVblankStart((g_vitaVideo.vsync || g_vitaVideo.fps60) ? GL_TRUE : GL_FALSE);
 
     g_hWnd = &s_display;
 

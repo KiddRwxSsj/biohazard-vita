@@ -154,9 +154,89 @@ struct TmdTri {
                    // every shadow once they became depth-tested.
     int   otDepth; // the ordering-table depth its object was queued at. Only
                    // used to break exact `depth` ties - see the sort below.
+    unsigned int key;  // port-only: finds this triangle again next tick (TmdInterp)
 };
 static TmdTri g_tmdTris[TMD_MAX_TRIS_COLLECT];
 static int    g_tmdTriOrder[TMD_MAX_TRIS_COLLECT];
+
+// Port-only, 60 FPS (g_portFrameInterp). Each tick remembers every triangle's
+// screen corners under a key built from its object entry, primitive and half,
+// so the next tick can hand the backend where the same triangle was before.
+// The backend draws an extra frame halfway between the two. Two tables, flipped
+// every tick; heap so nothing moves in .bss when the option is off.
+#define TMD_INTERP_SLOTS 16384
+struct TmdInterpSlot {
+    unsigned int key;
+    float v[12];       // x, y, z, w for each of the three corners
+};
+static TmdInterpSlot* s_interp[2];
+static int s_interpCur  = 0;
+static int s_interpRoom = -1;
+
+static unsigned int TmdInterpKey(const BYTE* objData, int prim, int part)
+{
+    unsigned int h = (unsigned int)(size_t)objData * 2654435761u;
+    h ^= (unsigned int)(prim * 4 + part) * 0x85EBCA6Bu;
+    h ^= h >> 13;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    return h != 0 ? h : 1;
+}
+
+// Linear probe. Returns the slot holding `key`, or the empty one it would go in.
+static TmdInterpSlot* TmdInterpFind(TmdInterpSlot* table, unsigned int key)
+{
+    unsigned int i = key & (TMD_INTERP_SLOTS - 1);
+    for (int n = 0; n < TMD_INTERP_SLOTS; ++n) {
+        TmdInterpSlot* slot = &table[i];
+        if (slot->key == key || slot->key == 0) return slot;
+        i = (i + 1) & (TMD_INTERP_SLOTS - 1);
+    }
+    return NULL;
+}
+
+static bool TmdInterpBegin(void)
+{
+    if (!g_portFrameInterp) return false;
+    if (s_interp[0] == NULL) {
+        s_interp[0] = (TmdInterpSlot*)calloc(TMD_INTERP_SLOTS, sizeof(TmdInterpSlot));
+        s_interp[1] = (TmdInterpSlot*)calloc(TMD_INTERP_SLOTS, sizeof(TmdInterpSlot));
+        if (s_interp[0] == NULL || s_interp[1] == NULL) {
+            free(s_interp[0]);
+            free(s_interp[1]);
+            s_interp[0] = s_interp[1] = NULL;
+            return false;
+        }
+    }
+    s_interpCur ^= 1;
+    memset(s_interp[s_interpCur], 0, TMD_INTERP_SLOTS * sizeof(TmdInterpSlot));
+
+    // A camera cut or a new room is a jump, not motion: nothing to blend from.
+    const int room = (g_stageId << 16) | (g_roomId << 8) | g_roomCameraId;
+    if (room != s_interpRoom) {
+        memset(s_interp[s_interpCur ^ 1], 0, TMD_INTERP_SLOTS * sizeof(TmdInterpSlot));
+        s_interpRoom = room;
+    }
+    return true;
+}
+
+// Remember this tick's corners and write last tick's (or these again when the
+// triangle is new) into `prev`, laid out like the vertex batch itself.
+static void TmdInterpTrack(const TmdTri* t3, float* prev)
+{
+    memcpy(prev, t3->v, sizeof(t3->v));
+    TmdInterpSlot* cur = TmdInterpFind(s_interp[s_interpCur], t3->key);
+    if (cur != NULL && cur->key == 0) {
+        cur->key = t3->key;
+        for (int c = 0; c < 3; ++c)
+            memcpy(cur->v + c * 4, t3->v + c * TMD_VERT_FLOATS, 4 * sizeof(float));
+    }
+    TmdInterpSlot* old = TmdInterpFind(s_interp[s_interpCur ^ 1], t3->key);
+    if (old != NULL && old->key == t3->key) {
+        for (int c = 0; c < 3; ++c)
+            memcpy(prev + c * TMD_VERT_FLOATS, old->v + c * 4, 4 * sizeof(float));
+    }
+}
 
 // ============================================================================
 // TmdQueue_Reset
@@ -737,6 +817,7 @@ void FlushTmdObjects(void)
                     t3->tex   = tex;
                     t3->alpha = triAlpha;
                     t3->otDepth = e->depth;
+                    t3->key = TmdInterpKey(e->objData, pIdx, t);
                     g_tmdTriOrder[collected] = collected;
                     collected++;
 
@@ -768,6 +849,7 @@ void FlushTmdObjects(void)
                         k3->tex     = (DWORD)knockTex;
                         k3->alpha   = triAlpha;
                         k3->otDepth = e->depth;
+                        k3->key     = TmdInterpKey(e->objData, pIdx, t + 2);
                         g_tmdTriOrder[collected] = collected;
                         collected++;
                     }
@@ -808,9 +890,19 @@ void FlushTmdObjects(void)
         });
 
         static float triVerts[TMD_MAX_TRIS_FLUSH * TMD_TRI_FLOATS];
+        static float triPrev[TMD_MAX_TRIS_FLUSH * TMD_TRI_FLOATS];
         int   triCount = 0;
         DWORD triTex   = 0;
         bool  triWrite = true;   // depth-WRITE mode of the batch in flight
+        const bool interp = TmdInterpBegin();
+        auto drawBatch = [&]() {
+            g_portInterpPrev = interp ? triPrev : NULL;
+            Marni_DX()->DrawTriangles3D(triVerts, triCount, (MarniHandle)triTex,
+                                        MARNI_SAMPLER_POINT, MARNI_BLEND_ALPHA,
+                                        triWrite);
+            g_portInterpPrev = NULL;
+            triCount = 0;
+        };
 
         for (int k = 0; k < collected; k++) {
             const TmdTri* t3 = &g_tmdTris[g_tmdTriOrder[k]];
@@ -820,12 +912,7 @@ void FlushTmdObjects(void)
             // screen before it. The batch in flight is behind them too, so it
             // goes down first.
             while (maskIdx < maskCount && (float)maskDepths[maskIdx] > t3->depth) {
-                if (triCount > 0) {
-                    Marni_DX()->DrawTriangles3D(triVerts, triCount, (MarniHandle)triTex,
-                                                MARNI_SAMPLER_POINT, MARNI_BLEND_ALPHA,
-                                                triWrite);
-                    triCount = 0;
-                }
+                if (triCount > 0) drawBatch();
                 FlushSpriteCommandsRange(maskDepths[maskIdx], maskCursor, SPRITE_CLASS_SCENE);
                 maskCursor = maskDepths[maskIdx];
                 maskIdx++;
@@ -833,21 +920,15 @@ void FlushTmdObjects(void)
 
             if ((triCount > 0 && (t3->tex != triTex || triWriteThis != triWrite)) ||
                 triCount >= TMD_MAX_TRIS_FLUSH) {
-                Marni_DX()->DrawTriangles3D(triVerts, triCount, (MarniHandle)triTex,
-                                            MARNI_SAMPLER_POINT, MARNI_BLEND_ALPHA,
-                                            triWrite);
-                triCount = 0;
+                drawBatch();
             }
             triTex = t3->tex;
             triWrite = triWriteThis;
             memcpy(triVerts + triCount * TMD_TRI_FLOATS, t3->v, sizeof(t3->v));
+            if (interp) TmdInterpTrack(t3, triPrev + triCount * TMD_TRI_FLOATS);
             triCount++;
         }
-        if (triCount > 0) {
-            Marni_DX()->DrawTriangles3D(triVerts, triCount, (MarniHandle)triTex,
-                                        MARNI_SAMPLER_POINT, MARNI_BLEND_ALPHA,
-                                        triWrite);
-        }
+        if (triCount > 0) drawBatch();
     }
 
     // The scene sprites nearer than the last triangle - and, when no entity was

@@ -16,7 +16,7 @@
 #include <string.h>
 #include <strings.h>
 
-VitaVideoSettings g_vitaVideo = { VITA_ASPECT_4_3, FALSE, TRUE, 1.0f, 0 };
+VitaVideoSettings g_vitaVideo = { VITA_ASPECT_4_3, FALSE, TRUE, 1.0f, 0, FALSE };
 BOOL g_vitaVideoDirty = FALSE;
 VitaGameplaySettings g_vitaGameplay = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
 
@@ -80,6 +80,10 @@ static const char kVitaSection[] =
     "Gamma=1.0\n"
     "; Antialiasing (MSAA): 0 (default), 2 or 4. 4 costs GPU time and memory.\n"
     "MSAA=0\n"
+    "; FrameRate: 30 (default, as shipped) or 60. The game still runs 30 ticks a\n"
+    "; second; 60 adds a frame between ticks with the 3D models halfway along.\n"
+    "; Forces VSync on while it is set.\n"
+    "FrameRate=30\n"
     "; Gameplay extras, 1 = on. AutoRun: push forward to run, hold run to walk.\n"
     "; WeaponSwitch: flick the right stick to change weapon. SkipDoors: cut the\n"
     "; door animation out entirely. HealthHud: the status screen's portrait and\n"
@@ -148,6 +152,8 @@ void vita_load_video_settings(void)
 
     int msaa = ConfigFile_ReadInt("Vita", "MSAA", 0);
     g_vitaVideo.msaa = (msaa >= 4) ? 4 : (msaa >= 2) ? 2 : 0;
+    g_vitaVideo.fps60 = ConfigFile_ReadInt("Vita", "FrameRate", 30) >= 60 ? TRUE : FALSE;
+    g_portFrameInterp = g_vitaVideo.fps60 ? 1 : 0;
 
     g_vitaGameplay.autoRun      = ConfigFile_ReadInt("Vita", "AutoRun", 0) ? TRUE : FALSE;
     g_vitaGameplay.weaponSwitch = ConfigFile_ReadInt("Vita", "WeaponSwitch", 0) ? TRUE : FALSE;
@@ -184,7 +190,7 @@ void vita_save_video_settings(void)
     static const char* const kKeys[] = {
         "Aspect", "Filter", "VSync", "Gamma", "MSAA",
         "AutoRun", "WeaponSwitch", "SkipDoors", "HealthHud", "AmmoHud",
-        "HudStatus", "HudWeapon", "HudAutoHide",
+        "HudStatus", "HudWeapon", "FrameRate", "HudAutoHide",
     };
     const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
     char values[sizeof(kKeys) / sizeof(kKeys[0])][16];
@@ -202,7 +208,8 @@ void vita_save_video_settings(void)
         snprintf(values[10 + i], sizeof(values[10 + i]), "%d,%d,%d",
                  g_portHudLayout[i].x, g_portHudLayout[i].y, g_portHudLayout[i].scale);
     }
-    snprintf(values[12], sizeof(values[12]), "%d", g_vitaGameplay.hudAutoHide ? 1 : 0);
+    snprintf(values[12], sizeof(values[12]), "%d", g_vitaVideo.fps60 ? 60 : 30);
+    snprintf(values[13], sizeof(values[13]), "%d", g_vitaGameplay.hudAutoHide ? 1 : 0);
 
     const char* path = ConfigFile_Find();
     FILE* in = fopen(path, "r");

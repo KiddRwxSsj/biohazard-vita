@@ -42,14 +42,14 @@
 namespace {
 
 enum Item {
-    ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA,
+    ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_FRAME_RATE,
     ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
     ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD,
     ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, ITEM_COUNT
 };
 
 const char* const kLabels[ITEM_COUNT] = {
-    "ASPECT", "FILTER", "GAMMA", "MSAA",
+    "ASPECT", "FILTER", "GAMMA", "MSAA", "FRAME RATE",
     "AUTO RUN", "WEAPON SWAP", "SKIP DOORS", "STATUS HUD", "WEAPON HUD",
     "HUD AUTO HIDE", "EDIT HUD",
     "SLOT", "QUICK SAVE", "QUICK LOAD", "DELETE", "CLOSE"
@@ -61,7 +61,7 @@ const char* const kPageNames[PAGE_COUNT] = { "VIDEO", "GAMEPLAY", "SAVES" };
 
 // Rows per page, -1 terminated. CLOSE is on every page.
 const int kPageItems[PAGE_COUNT][8] = {
-    { ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_CLOSE, -1, -1, -1 },
+    { ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_FRAME_RATE, ITEM_CLOSE, -1, -1 },
     { ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
       ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD, ITEM_CLOSE },
     { ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, -1, -1, -1 },
@@ -422,6 +422,10 @@ void Change(int item, int dir)
         g_vitaVideo.msaa = (dir > 0) ? (g_vitaVideo.msaa == 0 ? 2 : 4)
                                      : (g_vitaVideo.msaa == 4 ? 2 : 0);
         break;
+    case ITEM_FRAME_RATE:
+        g_vitaVideo.fps60 = !g_vitaVideo.fps60;
+        g_portFrameInterp = g_vitaVideo.fps60 ? 1 : 0;
+        break;
     case ITEM_SLOT:
         // The slot the next request means; a save already in flight keeps its own.
         g_portQuickSlot = (g_portQuickSlot + dir + PORT_QUICK_SLOT_COUNT) % PORT_QUICK_SLOT_COUNT;
@@ -509,6 +513,7 @@ void ValueText(int item, char* out, size_t size)
         if (g_vitaVideo.msaa == 0) snprintf(out, size, "OFF");
         else snprintf(out, size, "%dX", g_vitaVideo.msaa);
         break;
+    case ITEM_FRAME_RATE: snprintf(out, size, "%s", g_vitaVideo.fps60 ? "60" : "30"); break;
     case ITEM_SLOT:   snprintf(out, size, "%d", g_portQuickSlot + 1); break;
     case ITEM_AUTO_RUN:    snprintf(out, size, "%s", g_vitaGameplay.autoRun ? "ON" : "OFF"); break;
     case ITEM_WEAPON_SWAP: snprintf(out, size, "%s", g_vitaGameplay.weaponSwitch ? "ON" : "OFF"); break;

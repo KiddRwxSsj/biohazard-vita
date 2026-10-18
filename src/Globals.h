@@ -726,6 +726,12 @@ struct PortHudWidget {
 };
 extern int           g_portHud;
 extern int           g_portHudAutoHide;          // MainMenu.cpp - fade the HUD out when idle
+
+// Port-added 60 FPS presentation. Logic stays at 30 ticks; FlushTmdObjects
+// points g_portInterpPrev at last tick's corners of the batch it is about to
+// draw, so a backend that supports it can draw an in-between frame.
+extern int           g_portFrameInterp;
+extern const float*  g_portInterpPrev;
 extern PortHudWidget g_portHudLayout[2];           // MainMenu.cpp - [0] status, [1] weapon
 void port_hud_draw(int parts);                     // MainMenu.cpp
 
