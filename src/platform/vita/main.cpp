@@ -110,7 +110,7 @@ int main(int argc, char** argv)
 
     // Needs the [Mods] list ConfigFile_Load set up.
     vita_hd_init();
-    vita_hd_prepare();      // [Vita] HdPreload, before anything else wants the cores
+    vita_hd_drop_old_cache();
 
     StartSoundSystemAsync(g_hWnd);
 

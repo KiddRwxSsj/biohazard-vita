@@ -18,11 +18,9 @@
 //     [Vita] HdMaxHeight, into an LRU of ready pictures.
 //   * A camera cut shows the original picture at once if its HD one is not
 //     decoded yet, and port_hd_poll swaps the HD one in on the frame it is.
-//   * [Vita] HdPreload: vita_hd_prepare decodes every picture of the active
-//     packs once, before the game starts, into ux0:data/RE1/hdcache/<size>/
-//     (zlib'd RGBA, already scaled). A cached picture is a read and an
-//     inflate instead of a full-size WebP decode, and port_hd_poll then waits
-//     for the picture on screen rather than showing the original first.
+//   * The mod manager's OPTIMIZE turns a pack's WebPs into HASH.jpg (bgd) /
+//     HASH.rhd (mask) at HdMaxHeight and deletes them. Those load fast, so
+//     port_hd_poll waits for them instead of showing the original first.
 //   * A file that is not a sane WebP, or is bigger than kMaxSide in either
 //     direction, is skipped rather than decoded - a pack made for a PC with
 //     8K upscales would otherwise run the console out of memory. Everything
@@ -40,13 +38,14 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <webp/decode.h>
+#include <turbojpeg.h>
 #include <zlib.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 
-#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -106,14 +105,25 @@ bool IsMask(const std::string& name)
     return name.compare(0, 3, "osp") == 0;
 }
 
+bool Ext(const std::string& path, const char* ext)
+{
+    const size_t n = strlen(ext);
+    return path.size() >= n && strcasecmp(path.c_str() + path.size() - n, ext) == 0;
+}
+
+// The pack's file for `name`: an optimized .jpg/.rhd first, else the .webp.
 std::string FindFile(const std::string& name)
 {
     auto it = s_map.find(name);
     if (it == s_map.end()) return std::string();
-    const char* kind = IsMask(name) ? "mask/" : "bgd/";
+    const bool mask = IsMask(name);
+    const char* kind = mask ? "mask/" : "bgd/";
     for (const std::string& root : s_roots) {
-        std::string path = root + kind + it->second + ".webp";
-        if (plat_file_exists(path.c_str())) return path;
+        const std::string base = root + kind + it->second;
+        const std::string fast = base + (mask ? ".rhd" : ".jpg");
+        if (plat_file_exists(fast.c_str())) return fast;
+        const std::string webp = base + ".webp";
+        if (plat_file_exists(webp.c_str())) return webp;
     }
     return std::string();
 }
@@ -138,85 +148,32 @@ unsigned char* ReadFile(const std::string& path, size_t* size)
 }
 
 // ---------------------------------------------------------------------------
-// HdPreload cache: <kCacheRoot>/<MaxHeight>/<mod>_hires_bgd_<HASH>.rhd
+// Optimized packs (mod manager, OPTIMIZE): beside or instead of HASH.webp,
+//   bgd/HASH.jpg   the background, already scaled, as a JPEG,
+//   mask/HASH.rhd  the mask sheet, already scaled: "RHD1" header + zlib RGBA.
+// Both load several times faster than the WebP they replace.
 // ---------------------------------------------------------------------------
 
-const char kCacheRoot[] = "ux0:data/RE1/hdcache";
-
-struct CacheHeader {
+struct RhdHeader {
     char     magic[4];          // "RHD1"
     unsigned w, h;
-    unsigned srcSize;           // the .webp it was made from, to notice a new pack
-    unsigned maxH;
+    unsigned reserved;
+    unsigned maxH;              // HdMaxHeight it was made for
     unsigned zlen;              // zlib stream that follows
 };
 
-std::unordered_map<std::string, bool> s_cacheIndex;     // file names in CacheDir()
-
-std::string CacheDir(void)
+bool ReadRhd(const std::string& path, Picture* out)
 {
-    char d[64];
-    snprintf(d, sizeof(d), "%s/%d", kCacheRoot, MaxHeight());
-    return d;
-}
-
-std::string CacheName(const std::string& src)
-{
-    const size_t at = src.find("/mods/");
-    std::string r = at == std::string::npos ? src : src.substr(at + 6);
-    const size_t dot = r.rfind('.');
-    if (dot != std::string::npos) r.resize(dot);
-    // Lower case: the card ignores case, the index below must too.
-    for (char& c : r) {
-        if (c == '/' || c == ':' || c == ' ') c = '_';
-        else if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-    }
-    return r + ".rhd";
-}
-
-void ListCache(void)
-{
-    s_cacheIndex.clear();
-    SceUID d = sceIoDopen(CacheDir().c_str());
-    if (d < 0) return;
-    SceIoDirent e;
-    memset(&e, 0, sizeof(e));
-    while (sceIoDread(d, &e) > 0) {
-        if (!SCE_S_ISDIR(e.d_stat.st_mode)) {
-            std::string n = e.d_name;
-            for (char& c : n) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            s_cacheIndex[n] = true;
-        }
-        memset(&e, 0, sizeof(e));
-    }
-    sceIoDclose(d);
-}
-
-unsigned SourceSize(const std::string& path)
-{
-    SceIoStat st;
-    if (sceIoGetstat(path.c_str(), &st) < 0) return 0;
-    return (unsigned)st.st_size;
-}
-
-bool ReadCache(const std::string& src, Picture* out)
-{
-    const std::string name = CacheName(src);
-    {
-        Lock l;
-        if (s_cacheIndex.count(name) == 0) return false;
-    }
     size_t size = 0;
-    unsigned char* data = ReadFile(CacheDir() + "/" + name, &size);
+    unsigned char* data = ReadFile(path, &size);
     if (data == NULL) return false;
     bool ok = false;
-    CacheHeader hdr;
+    RhdHeader hdr;
     if (size >= sizeof(hdr)) {
         memcpy(&hdr, data, sizeof(hdr));
         const size_t pixels = (size_t)hdr.w * hdr.h;
-        if (memcmp(hdr.magic, "RHD1", 4) == 0 && hdr.maxH == (unsigned)MaxHeight() &&
-            hdr.w > 0 && hdr.h > 0 && hdr.w <= kMaxSide && hdr.h <= kMaxSide &&
-            sizeof(hdr) + hdr.zlen <= size && hdr.srcSize == SourceSize(src)) {
+        if (memcmp(hdr.magic, "RHD1", 4) == 0 && hdr.w > 0 && hdr.h > 0 &&
+            hdr.w <= kMaxSide && hdr.h <= kMaxSide && sizeof(hdr) + hdr.zlen <= size) {
             unsigned char* rgba = (unsigned char*)WebPMalloc(pixels * 4);
             uLongf len = (uLongf)(pixels * 4);
             if (rgba != NULL && uncompress(rgba, &len, data + sizeof(hdr), hdr.zlen) == Z_OK &&
@@ -234,43 +191,79 @@ bool ReadCache(const std::string& src, Picture* out)
     return ok;
 }
 
-// Returns the bytes written, 0 on failure.
-size_t WriteCache(const std::string& src, const Picture& pic)
+bool WriteAtomically(const std::string& path, const void* a, size_t na, const void* b, size_t nb)
+{
+    const std::string tmp = path + ".part";
+    SceUID fd = sceIoOpen(tmp.c_str(), SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+    if (fd < 0) return false;
+    bool full = sceIoWrite(fd, a, (SceSize)na) == (int)na;
+    if (full && nb > 0) full = sceIoWrite(fd, b, (SceSize)nb) == (int)nb;
+    sceIoClose(fd);
+    sceIoRemove(path.c_str());
+    if (full && sceIoRename(tmp.c_str(), path.c_str()) >= 0) return true;
+    sceIoRemove(tmp.c_str());
+    return false;
+}
+
+bool WriteRhd(const std::string& path, const Picture& pic)
 {
     const uLong raw = (uLong)pic.w * pic.h * 4;
     uLongf zlen = compressBound(raw);
-    unsigned char* z = (unsigned char*)malloc(sizeof(CacheHeader) + zlen);
-    if (z == NULL) return 0;
-    size_t written = 0;
-    if (compress2(z + sizeof(CacheHeader), &zlen, pic.rgba, raw, 1) == Z_OK) {
-        CacheHeader hdr;
+    unsigned char* z = (unsigned char*)malloc(zlen);
+    if (z == NULL) return false;
+    bool ok = false;
+    if (compress2(z, &zlen, pic.rgba, raw, 6) == Z_OK) {
+        RhdHeader hdr;
         memcpy(hdr.magic, "RHD1", 4);
         hdr.w = (unsigned)pic.w;
         hdr.h = (unsigned)pic.h;
-        hdr.srcSize = SourceSize(src);
+        hdr.reserved = 0;
         hdr.maxH = (unsigned)MaxHeight();
         hdr.zlen = (unsigned)zlen;
-        memcpy(z, &hdr, sizeof(hdr));
-        const std::string name = CacheName(src);
-        const std::string path = CacheDir() + "/" + name;
-        const std::string tmp = path + ".part";
-        SceUID fd = sceIoOpen(tmp.c_str(), SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
-        if (fd >= 0) {
-            const size_t total = sizeof(hdr) + zlen;
-            const bool full = sceIoWrite(fd, z, (SceSize)total) == (int)total;
-            sceIoClose(fd);
-            sceIoRemove(path.c_str());
-            if (full && sceIoRename(tmp.c_str(), path.c_str()) >= 0) {
-                Lock l;
-                s_cacheIndex[name] = true;
-                written = total;
-            } else {
-                sceIoRemove(tmp.c_str());
-            }
-        }
+        ok = WriteAtomically(path, &hdr, sizeof(hdr), z, zlen);
     }
     free(z);
-    return written;
+    return ok;
+}
+
+bool ReadJpeg(const std::string& path, Picture* out)
+{
+    size_t size = 0;
+    unsigned char* data = ReadFile(path, &size);
+    if (data == NULL) return false;
+    bool ok = false;
+    tjhandle tj = tjInitDecompress();
+    int w = 0, h = 0, sub = 0, cs = 0;
+    if (tj != NULL && tjDecompressHeader3(tj, data, (unsigned long)size, &w, &h, &sub, &cs) == 0 &&
+        w > 0 && h > 0 && w <= kMaxSide && h <= kMaxSide) {
+        unsigned char* rgba = (unsigned char*)WebPMalloc((size_t)w * h * 4);
+        if (rgba != NULL && tjDecompress2(tj, data, (unsigned long)size, rgba, w, 0, h,
+                                          TJPF_RGBA, TJFLAG_FASTDCT) == 0) {
+            out->rgba = rgba;
+            out->w = w;
+            out->h = h;
+            ok = true;
+        } else {
+            WebPFree(rgba);
+        }
+    }
+    if (tj != NULL) tjDestroy(tj);
+    free(data);
+    return ok;
+}
+
+bool WriteJpeg(const std::string& path, const Picture& pic)
+{
+    tjhandle tj = tjInitCompress();
+    if (tj == NULL) return false;
+    unsigned char* jpg = NULL;
+    unsigned long size = 0;
+    bool ok = tjCompress2(tj, pic.rgba, pic.w, 0, pic.h, TJPF_RGBA, &jpg, &size,
+                          TJSAMP_444, 92, TJFLAG_ACCURATEDCT) == 0;
+    ok = ok && WriteAtomically(path, jpg, size, NULL, 0);
+    tjFree(jpg);
+    tjDestroy(tj);
+    return ok;
 }
 
 // Decode the WebP at `path` to at most MaxHeight() pixels high (backgrounds)
@@ -324,9 +317,11 @@ bool Decode(const Job& job, Picture* out)
 {
     const std::string path = FindFile(job.name);
     if (path.empty()) return false;
-    if (ReadCache(path, out)) return true;
+    if (Ext(path, ".jpg")) return ReadJpeg(path, out);
+    if (Ext(path, ".rhd")) return ReadRhd(path, out);
     return DecodeWebp(path, IsMask(job.name), out);
 }
+
 
 void EvictFor(size_t need)
 {
@@ -475,7 +470,6 @@ void vita_hd_init(void)
 
     LoadMap("app0:hd_map.txt");
     if (s_map.empty()) return;
-    ListCache();
 
     if (sceKernelCreateLwMutex(&s_lock, "re1_hd", SCE_KERNEL_MUTEX_ATTR_RECURSIVE, 0, NULL) < 0) return;
     s_wake = sceKernelCreateSema("re1_hd", 0, 0, 0x7FFFFFFF, NULL);
@@ -526,16 +520,23 @@ void port_hd_mask(const char* name, int slot)
     Queue(key);
 }
 
-// HdPreload: hold the frame until the picture on screen is ready (or known
-// to be missing), so the original never shows first. Bounded, in case the
-// card is very slow.
+// A picture from an optimized pack loads in a few frames: hold the frame
+// for it rather than show the original background first (pop-in). A plain
+// .webp can take half a second, so that one is swapped in when it is ready.
 static void WaitFor(bool mask)
 {
-    for (int t = 0; t < 750; ++t) {             // 1.5 s at most
+    std::string name;
+    {
+        Lock l;
+        name = mask ? s_wantMask : s_wantBg;
+    }
+    const std::string path = FindFile(name);
+    if (!Ext(path, ".jpg") && !Ext(path, ".rhd")) return;
+    for (int t = 0; t < 500; ++t) {             // 1 s at most
         {
             Lock l;
-            const std::string& name = mask ? s_wantMask : s_wantBg;
-            if (name.empty() || s_done.count(name) != 0 || s_failed.count(name) != 0) return;
+            const std::string& now = mask ? s_wantMask : s_wantBg;
+            if (now.empty() || s_done.count(now) != 0 || s_failed.count(now) != 0) return;
         }
         sceKernelDelayThread(2000);
     }
@@ -545,10 +546,8 @@ void port_hd_poll(void)
 {
     if (!s_ready) return;
 
-    if (g_vitaVideo.hdPreload) {
-        if (!s_wantBg.empty()) WaitFor(false);
-        if (!s_wantMask.empty()) WaitFor(true);
-    }
+    if (!s_wantBg.empty()) WaitFor(false);
+    if (!s_wantMask.empty()) WaitFor(true);
 
     if (!s_wantBg.empty() && g_displayImageSRV != MARNI_NULL_HANDLE) {
         MarniHandle tex = Upload(s_wantBg);
@@ -574,133 +573,50 @@ void port_hd_poll(void)
 }
 
 // ---------------------------------------------------------------------------
-// HdPreload: prepare the whole pack before play
+// Mod manager: OPTIMIZE
 // ---------------------------------------------------------------------------
 
-namespace {
-
-struct PrepJob {
-    std::string path;
-    bool mask;
-};
-
-std::vector<PrepJob> s_prep;
-volatile int s_prepNext = 0;
-volatile int s_prepDone = 0;
-volatile int s_prepStop = 0;
-volatile int s_prepRunning = 0;
-volatile unsigned long long s_prepBytes = 0;
-
-int PrepThread(SceSize, void*)
+BOOL vita_hd_optimize_picture(const char* webpPath, BOOL mask)
 {
-    for (;;) {
-        if (s_prepStop) break;
-        const int i = __atomic_fetch_add(&s_prepNext, 1, __ATOMIC_SEQ_CST);
-        if (i >= (int)s_prep.size()) break;
-        Picture pic = { NULL, 0, 0, 0 };
-        if (DecodeWebp(s_prep[i].path, s_prep[i].mask, &pic)) {
-            const size_t n = WriteCache(s_prep[i].path, pic);
-            __atomic_fetch_add(&s_prepBytes, (unsigned long long)n, __ATOMIC_SEQ_CST);
-            WebPFree(pic.rgba);
-        }
-        __atomic_fetch_add(&s_prepDone, 1, __ATOMIC_SEQ_CST);
-    }
-    __atomic_fetch_sub(&s_prepRunning, 1, __ATOMIC_SEQ_CST);
-    return sceKernelExitDeleteThread(0);
+    const std::string src = webpPath;
+    const size_t dot = src.rfind('.');
+    if (dot == std::string::npos) return FALSE;
+    const std::string dst = src.substr(0, dot) + (mask ? ".rhd" : ".jpg");
+    Picture pic = { NULL, 0, 0, 0 };
+    if (!DecodeWebp(src, mask ? true : false, &pic)) return FALSE;
+    const bool ok = mask ? WriteRhd(dst, pic) : WriteJpeg(dst, pic);
+    WebPFree(pic.rgba);
+    if (!ok) return FALSE;
+    sceIoRemove(src.c_str());
+    return TRUE;
 }
 
-// The cache of another HdMaxHeight is dead weight once the size changed.
-void DropOtherSizes(void)
+// The HD PRELOAD cache of the previous version: optimization replaced it.
+void vita_hd_drop_old_cache(void)
 {
-    SceUID d = sceIoDopen(kCacheRoot);
+    const char* root = "ux0:data/RE1/hdcache";
+    SceUID d = sceIoDopen(root);
     if (d < 0) return;
-    std::vector<std::string> stale;
+    std::vector<std::string> dirs;
     SceIoDirent e;
     memset(&e, 0, sizeof(e));
-    char mine[16];
-    snprintf(mine, sizeof(mine), "%d", MaxHeight());
     while (sceIoDread(d, &e) > 0) {
-        if (SCE_S_ISDIR(e.d_stat.st_mode) && strcmp(e.d_name, mine) != 0 &&
-            strcmp(e.d_name, ".") != 0 && strcmp(e.d_name, "..") != 0) {
-            stale.push_back(std::string(kCacheRoot) + "/" + e.d_name);
-        }
+        if (e.d_name[0] != '.') dirs.push_back(std::string(root) + "/" + e.d_name);
         memset(&e, 0, sizeof(e));
     }
     sceIoDclose(d);
-    for (const std::string& dir : stale) {
+    for (const std::string& dir : dirs) {
         SceUID sd = sceIoDopen(dir.c_str());
         if (sd >= 0) {
             memset(&e, 0, sizeof(e));
             while (sceIoDread(sd, &e) > 0) {
-                sceIoRemove((dir + "/" + e.d_name).c_str());
+                if (e.d_name[0] != '.') sceIoRemove((dir + "/" + e.d_name).c_str());
                 memset(&e, 0, sizeof(e));
             }
             sceIoDclose(sd);
         }
         sceIoRmdir(dir.c_str());
+        sceIoRemove(dir.c_str());
     }
-}
-
-}  // namespace
-
-void vita_hd_prepare(void)
-{
-    if (!s_ready || !g_vitaVideo.hdPreload) return;
-
-    sceIoMkdir(kCacheRoot, 0777);
-    DropOtherSizes();
-    sceIoMkdir(CacheDir().c_str(), 0777);
-    ListCache();
-
-    // Every picture a camera can ask for that has no cache file yet. A file
-    // whose pack was replaced is caught later by the size check and decoded
-    // on the fly, then picked up here on the next start.
-    std::set<std::string> seen;
-    s_prep.clear();
-    for (const auto& kv : s_map) {
-        const std::string path = FindFile(kv.first);
-        if (path.empty() || !seen.insert(path).second) continue;
-        if (s_cacheIndex.count(CacheName(path)) != 0) continue;
-        s_prep.push_back(PrepJob{ path, IsMask(kv.first) });
-    }
-    if (s_prep.empty()) return;
-
-    s_prepNext = s_prepDone = s_prepStop = 0;
-    s_prepBytes = 0;
-    s_prepRunning = 2;
-    // The game is not running yet: two cores decode, this one draws.
-    const int cores[2] = { 0x20000, 0x40000 };      // SCE_KERNEL_CPU_MASK_USER_1 / _2
-    for (int i = 0; i < 2; ++i) {
-        const SceUID t = sceKernelCreateThread("re1_hdprep", PrepThread, 0x10000100, 0x20000, 0,
-                                               cores[i], NULL);
-        if (t < 0 || sceKernelStartThread(t, 0, NULL) < 0) {
-            if (t >= 0) sceKernelDeleteThread(t);
-            __atomic_fetch_sub(&s_prepRunning, 1, __ATOMIC_SEQ_CST);
-        }
-    }
-
-    const int total = (int)s_prep.size();
-    const SceUInt64 start = sceKernelGetProcessTimeWide();
-    while (s_prepRunning > 0) {
-        const int done = s_prepDone;
-        const double secs = (double)(sceKernelGetProcessTimeWide() - start) / 1e6;
-        char eta[48] = "";
-        if (s_prepStop) {
-            snprintf(eta, sizeof(eta), "Stopping... ");
-        } else if (done > 0) {
-            const int left = (int)(secs / done * (total - done) / 60.0 + 0.5);
-            if (left < 1) snprintf(eta, sizeof(eta), "Less than a minute left. ");
-            else snprintf(eta, sizeof(eta), "About %d min left. ", left);
-        }
-        char line[256];
-        snprintf(line, sizeof(line),
-                 "Done once, so backgrounds never pop in. %s%d MB written to ux0:data/RE1/hdcache/.",
-                 eta, (int)(s_prepBytes >> 20));
-        if (vita_mod_manager_progress("PREPARING HD BACKGROUNDS", line, done, total)) {
-            s_prepStop = 1;     // the workers finish the picture they are on
-        }
-        sceKernelDelayThread(30000);
-    }
-    vita_mod_manager_progress_end();
-    s_prep.clear();
+    sceIoRmdir(root);
 }

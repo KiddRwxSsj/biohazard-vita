@@ -89,10 +89,6 @@ static const char kVitaSection[] =
     "; 480, 720 (default) or 960 lines. Bigger looks sharper and uses more memory.\n"
     "HdTextures=1\n"
     "HdMaxHeight=720\n"
-    "; HdPreload: 1 = prepare every HD picture once before the game starts (a few\n"
-    "; minutes the first time, about 1.2 GB on the card for Seamless HD at 720),\n"
-    "; so a camera cut never shows the original background first.\n"
-    "HdPreload=0\n"
     "; Gameplay extras, 1 = on. AutoRun: push forward to run, hold run to walk.\n"
     "; WeaponSwitch: flick the right stick to change weapon. SkipDoors: cut the\n"
     "; door animation out entirely. HealthHud: the status screen's portrait and\n"
@@ -168,7 +164,6 @@ void vita_load_video_settings(void)
         const int h = ConfigFile_ReadInt("Vita", "HdMaxHeight", 720);
         g_vitaVideo.hdMaxHeight = h >= 960 ? 960 : h >= 720 ? 720 : 480;
     }
-    g_vitaVideo.hdPreload = ConfigFile_ReadInt("Vita", "HdPreload", 0) ? TRUE : FALSE;
     g_portFrameInterp = g_vitaVideo.fps60 ? 1 : 0;
 
     g_vitaGameplay.autoRun      = ConfigFile_ReadInt("Vita", "AutoRun", 0) ? TRUE : FALSE;
@@ -288,7 +283,6 @@ void vita_save_video_settings(void)
         "Aspect", "Filter", "VSync", "Gamma", "MSAA",
         "AutoRun", "WeaponSwitch", "SkipDoors", "HealthHud", "AmmoHud",
         "HudStatus", "HudWeapon", "FrameRate", "HudAutoHide", "HdTextures", "HdMaxHeight",
-        "HdPreload",
     };
     const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
     char values[sizeof(kKeys) / sizeof(kKeys[0])][16];
@@ -310,7 +304,6 @@ void vita_save_video_settings(void)
     snprintf(values[13], sizeof(values[13]), "%d", g_vitaGameplay.hudAutoHide ? 1 : 0);
     snprintf(values[14], sizeof(values[14]), "%d", g_vitaVideo.hdTextures ? 1 : 0);
     snprintf(values[15], sizeof(values[15]), "%d", g_vitaVideo.hdMaxHeight);
-    snprintf(values[16], sizeof(values[16]), "%d", g_vitaVideo.hdPreload ? 1 : 0);
 
     const char* valuePtrs[sizeof(kKeys) / sizeof(kKeys[0])];
     for (int k = 0; k < kKeyCount; ++k) valuePtrs[k] = values[k];

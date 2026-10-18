@@ -29,7 +29,6 @@ struct VitaVideoSettings {
     BOOL  fps60;            // in-between frame per tick, see MarniDX_Vita.cpp
     BOOL  hdTextures;       // use texture pack mods' hires/ folders (hdpack.cpp)
     int   hdMaxHeight;      // HD pictures are scaled down to this many lines
-    BOOL  hdPreload;        // prepare every HD picture before play, no pop-in (hdpack.cpp)
 };
 
 extern VitaVideoSettings g_vitaVideo;
@@ -97,15 +96,20 @@ void vita_mod_manager_relaunch(void);
 // is read (it needs the mod list); vita_hd_active once a pack is in use.
 void vita_hd_init(void);
 BOOL vita_hd_active(void);
-// [Vita] HdPreload: before the game starts, decode every HD picture of the
-// active packs that is not prepared yet into ux0:data/RE1/hdcache/, showing
-// progress through vita_mod_manager_progress. Circle stops it.
-void vita_hd_prepare(void);
+// Destructive optimization (mod manager): a pack's WebP picture becomes a
+// JPEG (background) or zlib'd RGBA (mask) beside it, scaled to [Vita]
+// HdMaxHeight, and the .webp is deleted. TRUE when the new file is written.
+BOOL vita_hd_optimize_picture(const char* webpPath, BOOL mask);
+// Deletes ux0:data/RE1/hdcache/, the cache of the version before OPTIMIZE.
+void vita_hd_drop_old_cache(void);
 
-// modmanager.cpp: a full-screen progress page in the mod manager's style.
-// Returns TRUE when Circle was pressed. vita_mod_manager_progress_end frees it.
-BOOL vita_mod_manager_progress(const char* title, const char* line, int done, int total);
-void vita_mod_manager_progress_end(void);
+// movieconv.cpp: making a mod's movies playable, on the console.
+enum { MOVIE_OK, MOVIE_REMUX, MOVIE_TRANSCODE, MOVIE_UNSUPPORTED };
+typedef void (*VitaMovieProgress)(void* user, double fraction);
+int  vita_movie_classify(const char* path);
+BOOL vita_movie_remux(const char* path, VitaMovieProgress cb, void* user, volatile int* stop);
+BOOL vita_movie_transcode(const char* path, VitaMovieProgress cb, void* user, volatile int* stop);
+
 
 // Frames presented since boot (MarniDX_Vita Present), for the door trace.
 extern DWORD g_vitaPresentCount;

@@ -35,16 +35,20 @@
 #include <psp2/io/stat.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
+#include <psp2/power.h>
 #include <png.h>
 #include <vitaGL.h>
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -276,6 +280,7 @@ struct Mod {
 
     int rooms = 0, textures = 0, audio = 0, movies = 0, badMovies = 0, data = 0;
     int hdBg = 0, hdMask = 0, hdUsable = 0, dcHd = 0, pcOnly = 0, rebirthOnly = 0;
+    bool optimized = false;     // OPTIMIZE has run on it (vita_optimized.txt)
     int replaces = 0;           // files it replaces in the active region's tree
     int shadowed = 0;           // of those, how many a mod above it replaces first
 };
@@ -380,6 +385,7 @@ void Analyse(Mod& m, const std::string& region, std::unordered_set<std::string>&
             // Sound and voice are shared by both releases (AssetPath.cpp).
             if (top == "sound" || top == "voice") inRegion = true;
         } else if (top.empty()) {
+            if (strcasecmp(f.c_str(), "vita_optimized.txt") == 0) m.optimized = true;
             if (EndsWith(f, ".dll") || EndsWith(f, ".asi") || EndsWith(f, ".exe") ||
                 EndsWith(f, ".ini")) {
                 ++m.pcOnly;
@@ -391,7 +397,8 @@ void Analyse(Mod& m, const std::string& region, std::unordered_set<std::string>&
 
         if (top == "hires") {
             const std::string kind = Lower(f.substr(6, f.find('/', 6) - 6));
-            if (EndsWith(f, ".webp") && (kind == "bgd" || kind == "mask")) {
+            const bool pic = EndsWith(f, ".webp") || EndsWith(f, ".jpg") || EndsWith(f, ".rhd");
+            if (pic && (kind == "bgd" || kind == "mask")) {
                 (kind == "bgd" ? m.hdBg : m.hdMask)++;
                 const size_t slash = f.rfind('/');
                 std::string hash = f.substr(slash + 1, 8);
@@ -400,7 +407,10 @@ void Analyse(Mod& m, const std::string& region, std::unordered_set<std::string>&
             }
             continue;
         }
-        if (top == "bio1dc") { if (EndsWith(f, ".webp")) ++m.dcHd; continue; }
+        if (top == "bio1dc") {
+            if (EndsWith(f, ".webp") || EndsWith(f, ".jpg") || EndsWith(f, ".rhd")) ++m.dcHd;
+            continue;
+        }
 
         bool counted = true;
         if (top == "sound" || top == "voice") ++m.audio;
@@ -500,6 +510,7 @@ void Describe(const Mod& m, char* what, size_t whatSize, char* status, size_t st
     add(m.movies, "movies");
     add(m.data, "data files");
     if (w.empty()) w = "nothing the port can use";
+    if (m.optimized) w = "optimized for Vita: " + w;
     snprintf(what, whatSize, "%s", w.c_str());
 
     const bool otherRegionOnly = !m.rootTree &&
@@ -558,14 +569,14 @@ const char* const kPageNames[PAGE_COUNT] = { "MODS", "GAME", "VIDEO", "GAMEPLAY"
 
 enum Row {
     ROW_REGION, ROW_MODE,
-    ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE, ROW_HD_PRELOAD,
+    ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE,
     ROW_AUTORUN, ROW_WEAPON, ROW_DOORS, ROW_STATUS_HUD, ROW_WEAPON_HUD, ROW_HUD_HIDE,
 };
 
 const std::vector<Row> kPageRows[PAGE_COUNT] = {
     {},
     { ROW_REGION, ROW_MODE },
-    { ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE, ROW_HD_PRELOAD },
+    { ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE },
     { ROW_AUTORUN, ROW_WEAPON, ROW_DOORS, ROW_STATUS_HUD, ROW_WEAPON_HUD, ROW_HUD_HIDE },
 };
 
@@ -581,7 +592,6 @@ const char* RowLabel(Row r)
     case ROW_FPS:        return "FRAME RATE";
     case ROW_HD:         return "HD TEXTURES";
     case ROW_HD_SIZE:    return "HD TEXTURE SIZE";
-    case ROW_HD_PRELOAD: return "HD PRELOAD";
     case ROW_AUTORUN:    return "AUTO RUN";
     case ROW_WEAPON:     return "WEAPON SWAP";
     case ROW_DOORS:      return "SKIP DOORS";
@@ -604,7 +614,6 @@ const char* RowHelp(Row r)
     case ROW_FPS:        return "60: an extra frame between the game's 30 ticks. Logic stays at 30.";
     case ROW_HD:         return "Use the hires/ folder of texture pack mods (TeamX HD, Seamless HD).";
     case ROW_HD_SIZE:    return "HD pictures are scaled to this. Bigger is sharper and uses more memory.";
-    case ROW_HD_PRELOAD: return "Prepare every HD picture once when you press START (a few minutes the first time, about 1.2 GB on the card for Seamless HD at 720). Backgrounds then never pop in.";
     case ROW_AUTORUN:    return "Push forward to run, hold the run button to walk.";
     case ROW_WEAPON:     return "Flick the right stick to change weapon.";
     case ROW_DOORS:      return "No door animation: straight into the next room.";
@@ -629,7 +638,6 @@ void RowValue(Row r, char* out, size_t n)
     case ROW_MSAA:       if (g_vitaVideo.msaa) snprintf(out, n, "%dX", g_vitaVideo.msaa); else snprintf(out, n, "OFF"); break;
     case ROW_FPS:        snprintf(out, n, "%d", g_vitaVideo.fps60 ? 60 : 30); break;
     case ROW_HD:         snprintf(out, n, "%s", OnOff(g_vitaVideo.hdTextures)); break;
-    case ROW_HD_PRELOAD: snprintf(out, n, "%s", OnOff(g_vitaVideo.hdPreload)); break;
     case ROW_HD_SIZE:    snprintf(out, n, "%d LINES", g_vitaVideo.hdMaxHeight); break;
     case ROW_AUTORUN:    snprintf(out, n, "%s", OnOff(g_vitaGameplay.autoRun)); break;
     case ROW_WEAPON:     snprintf(out, n, "%s", OnOff(g_vitaGameplay.weaponSwitch)); break;
@@ -664,7 +672,6 @@ void RowChange(Row r, int dir)
         break;
     case ROW_FPS:        g_vitaVideo.fps60 = !g_vitaVideo.fps60; break;
     case ROW_HD:         g_vitaVideo.hdTextures = !g_vitaVideo.hdTextures; break;
-    case ROW_HD_PRELOAD: g_vitaVideo.hdPreload = !g_vitaVideo.hdPreload; break;
     case ROW_HD_SIZE: {
         static const int kSizes[3] = { 480, 720, 960 };
         int i = g_vitaVideo.hdMaxHeight >= 960 ? 2 : g_vitaVideo.hdMaxHeight >= 720 ? 1 : 0;
@@ -823,7 +830,7 @@ void Draw(int page, int cursor, int scroll, const char* toast)
     if (toast != NULL && toast[0] != '\0') {
         Text(24, VITA_SCREEN_H - 44, toast, kYellow, 0.85f, CharsFit(24, VITA_SCREEN_W - 246, 0.85f));
     } else if (page == PAGE_MODS) {
-        Text(24, VITA_SCREEN_H - 44, "X ON/OFF   SQUARE MOVE UP   TRIANGLE MOVE DOWN", kGrey, 0.8f);
+        Text(24, VITA_SCREEN_H - 44, "X ON/OFF   SQUARE UP   TRIANGLE DOWN   SELECT OPTIMIZE", kGrey, 0.8f);
     } else {
         Text(24, VITA_SCREEN_H - 44, "LEFT/RIGHT CHANGE", kGrey, 0.8f);
     }
@@ -832,6 +839,436 @@ void Draw(int page, int cursor, int scroll, const char* toast)
 
     Flush();
     vglSwapBuffers(GL_FALSE);
+}
+
+
+// ---------------------------------------------------------------------------
+// OPTIMIZE: destructive, on-console conversion of a mod (SELECT on MODS)
+//
+// Pictures: every hires/bgd|mask .webp -> .jpg / .rhd at HdMaxHeight
+// (hdpack.cpp), the .webp deleted. Movies: remuxed or transcoded so the Vita
+// plays them (movieconv.cpp), the source deleted. Then everything the port
+// never reads goes: hires/skin, skin2, misc, .dll/.asi, and bio1dc/ when no
+// DC/ is installed. Each file is replaced on its own, so CIRCLE (or a crash)
+// leaves a mod that still works and a second run finishes the rest.
+// ---------------------------------------------------------------------------
+
+struct PlanPic { std::string path; bool mask; };
+struct PlanMovie { std::string path; int kind; };
+
+struct Plan {
+    std::vector<PlanPic> pics;
+    std::vector<PlanMovie> movies;
+    std::vector<std::string> junkFiles;     // deleted outright
+    std::vector<std::string> junkDirs;      // emptied, then removed (deepest first)
+    long long junkBytes = 0, picBytes = 0;
+    int remux = 0, transcode = 0, unsupported = 0;
+};
+
+std::unordered_map<std::string, long long> s_sizes;     // filled by WalkAll
+
+long long FileSize(const std::string& path)
+{
+    auto it = s_sizes.find(path);
+    return it != s_sizes.end() ? it->second : 0;
+}
+
+// Every file and folder under `dir` (absolute paths), folders deepest first.
+void WalkAll(const std::string& dir, std::vector<std::string>& files, std::vector<std::string>& dirs,
+             long long* bytes, int depth = 0)
+{
+    if (depth > 10) return;
+    SceUID d = sceIoDopen(dir.c_str());
+    if (d < 0) return;
+    SceIoDirent e;
+    memset(&e, 0, sizeof(e));
+    std::vector<std::string> subs;
+    while (sceIoDread(d, &e) > 0) {
+        if (e.d_name[0] != '.') {
+            const std::string p = dir + "/" + e.d_name;
+            if (SCE_S_ISDIR(e.d_stat.st_mode)) subs.push_back(p);
+            else {
+                files.push_back(p);
+                s_sizes[p] = (long long)e.d_stat.st_size;
+                if (bytes) *bytes += (long long)e.d_stat.st_size;
+            }
+        }
+        memset(&e, 0, sizeof(e));
+    }
+    sceIoDclose(d);
+    for (const std::string& sub : subs) WalkAll(sub, files, dirs, bytes, depth + 1);
+    dirs.push_back(dir);
+}
+
+std::string ParentName(const std::string& path)
+{
+    const size_t slash = path.rfind('/');
+    if (slash == std::string::npos || slash == 0) return std::string();
+    const size_t prev = path.rfind('/', slash - 1);
+    return Lower(path.substr(prev == std::string::npos ? 0 : prev + 1, slash - (prev == std::string::npos ? 0 : prev + 1)));
+}
+
+void MakePlan(const Mod& m, Plan& plan)
+{
+    const std::string root = s_dataDir + "/mods/" + m.name;
+    std::vector<std::string> files, dirs;
+    s_sizes.clear();
+    WalkAll(root, files, dirs, NULL);
+
+    // Folders the port never reads.
+    std::vector<std::string> deadRoots;
+    for (const std::string& d : dirs) {
+        const std::string rel = Lower(d.substr(root.size()));
+        if (rel == "/bio1dc" && !s_hasDc) deadRoots.push_back(d);
+        else if (rel == "/hires/skin" || rel == "/hires/skin2" || rel == "/hires/misc" ||
+                 rel == "/bio1dc/hires/skin" || rel == "/bio1dc/hires/skin2" || rel == "/bio1dc/hires/misc") {
+            deadRoots.push_back(d);
+        }
+    }
+    auto underDead = [&](const std::string& p) {
+        for (const std::string& r : deadRoots) {
+            if (p.size() > r.size() && strncasecmp(p.c_str(), r.c_str(), r.size()) == 0 && p[r.size()] == '/') return true;
+            if (strcasecmp(p.c_str(), r.c_str()) == 0) return true;
+        }
+        return false;
+    };
+    for (const std::string& r : deadRoots) {
+        std::vector<std::string> f2;
+        WalkAll(r, f2, plan.junkDirs, &plan.junkBytes);
+        plan.junkFiles.insert(plan.junkFiles.end(), f2.begin(), f2.end());
+    }
+
+    for (const std::string& f : files) {
+        if (underDead(f)) continue;
+        const std::string rel = Lower(f.substr(root.size()));
+        if (EndsWith(f, ".dll") || EndsWith(f, ".asi")) {
+            plan.junkFiles.push_back(f);
+            plan.junkBytes += FileSize(f);
+            continue;
+        }
+        if (EndsWith(f, ".webp")) {
+            const std::string parent = ParentName(f);
+            const bool inHires = rel.find("/hires/") != std::string::npos;
+            if (inHires && (parent == "bgd" || parent == "mask")) {
+                plan.pics.push_back(PlanPic{ f, parent == "mask" });
+                plan.picBytes += FileSize(f);
+            }
+            continue;
+        }
+        if (ParentName(f) == "movie" &&
+            (EndsWith(f, ".mp4") || EndsWith(f, ".avi") || EndsWith(f, ".mkv") ||
+             EndsWith(f, ".mov") || EndsWith(f, ".m4v"))) {
+            const int kind = vita_movie_classify(f.c_str());
+            if (kind == MOVIE_REMUX) ++plan.remux;
+            else if (kind == MOVIE_TRANSCODE) ++plan.transcode;
+            else if (kind == MOVIE_UNSUPPORTED) ++plan.unsupported;
+            if (kind == MOVIE_REMUX || kind == MOVIE_TRANSCODE) plan.movies.push_back(PlanMovie{ f, kind });
+        }
+    }
+}
+
+void ProgressScreen(const char* title, const char* line1, const char* line2, int done, int total,
+                    double sub, const char* footer)
+{
+    BeginFrame();
+    if (s_backdrop) Image(s_backdrop, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0xFF505050);
+    Rect(0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0x99000000);
+    Rect(0, 0, VITA_SCREEN_W, 64, 0xE0100808);
+    Rect(0, 64, VITA_SCREEN_W, 2, kAccent);
+    Text(24, 10, "RESIDENT EVIL", kAccent, 1.3f);
+    Text(24, 38, title, kGrey, 0.8f, CharsFit(24, VITA_SCREEN_W - 24, 0.8f));
+
+    const float barX = 60, barY = 230, barW = VITA_SCREEN_W - 120, barH = 24;
+    char count[64];
+    snprintf(count, sizeof(count), "%d / %d", done, total);
+    Text(barX, barY - 40, count, kWhite, 1.0f);
+    Rect(barX, barY, barW, barH, 0xFF303030);
+    if (total > 0) Rect(barX, barY, barW * (float)done / (float)total, barH, kAccent);
+    if (sub >= 0) {
+        Rect(barX, barY + barH + 6, barW, 6, 0xFF303030);
+        Rect(barX, barY + barH + 6, barW * (float)sub, 6, kGold);
+    }
+    const int fit = CharsFit(barX, barX + barW, 0.8f);
+    TextWrap(barX, barY + 52, line1, kWhite, 0.8f, fit, 2, 19);
+    TextWrap(barX, barY + 96, line2, kGrey, 0.8f, fit, 3, 19);
+
+    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 62, 0xE0100808);
+    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 2, kAccent);
+    Text(24, VITA_SCREEN_H - 44, footer, kGrey, 0.8f, CharsFit(24, VITA_SCREEN_W - 24, 0.8f));
+    Flush();
+    vglSwapBuffers(GL_FALSE);
+}
+
+unsigned int PadPressed(unsigned int* prev)
+{
+    SceCtrlData pad;
+    memset(&pad, 0, sizeof(pad));
+    sceCtrlPeekBufferPositive(0, &pad, 1);
+    const unsigned int pressed = pad.buttons & ~*prev;
+    *prev = pad.buttons;
+    return pressed;
+}
+
+// The warning. TRUE once X has been held for three seconds.
+bool ConfirmOptimize(const Mod& m, const Plan& plan)
+{
+    char what[6][160];
+    int n = 0;
+    snprintf(what[n++], sizeof(what[0]), "%d HD pictures converted to fast-loading files at %d lines (%d MB of WebP replaced)",
+             (int)plan.pics.size(), g_vitaVideo.hdMaxHeight, (int)(plan.picBytes >> 20));
+    snprintf(what[n++], sizeof(what[0]), "%d movies converted on the Vita (%d quick re-packs, %d full re-encodes)",
+             plan.remux + plan.transcode, plan.remux, plan.transcode);
+    if (plan.unsupported > 0) {
+        snprintf(what[n++], sizeof(what[0]), "%d movies can't be converted here and are left as they are",
+                 plan.unsupported);
+    }
+    snprintf(what[n++], sizeof(what[0]), "%d unused files deleted (%d MB): hires/skin, skin2, misc, .dll, .asi%s",
+             (int)plan.junkFiles.size(), (int)(plan.junkBytes >> 20), s_hasDc ? "" : ", bio1dc/");
+
+    unsigned int prev = 0xFFFFFFFF;
+    SceUInt64 heldSince = 0;
+    float held = 0;
+    for (;;) {
+        SceCtrlData pad;
+        memset(&pad, 0, sizeof(pad));
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+        if (prev == 0xFFFFFFFF) prev = pad.buttons;
+        const unsigned int pressed = pad.buttons & ~prev;
+        prev = pad.buttons;
+        if (pressed & SCE_CTRL_CIRCLE) return false;
+        // Seconds, not frames: the draw rate is not fixed.
+        const SceUInt64 now = sceKernelGetProcessTimeWide();
+        if (pad.buttons & SCE_CTRL_CROSS) {
+            if (heldSince == 0) heldSince = now;
+            held = (float)(now - heldSince) / 3e6f;
+            if (held >= 1.0f) return true;
+        } else {
+            heldSince = 0;
+            held = 0;
+        }
+
+        BeginFrame();
+        if (s_backdrop) Image(s_backdrop, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0xFF505050);
+        Rect(0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0xC0000000);
+        Rect(0, 0, VITA_SCREEN_W, 64, 0xE0100808);
+        Rect(0, 64, VITA_SCREEN_W, 2, kAccent);
+        Text(24, 10, "OPTIMIZE FOR VITA", kAccent, 1.3f);
+        Text(24, 38, m.name.c_str(), kGrey, 0.8f, CharsFit(24, VITA_SCREEN_W - 24, 0.8f));
+
+        const int fit = CharsFit(40, VITA_SCREEN_W - 40, 0.8f);
+        float y = 84;
+        Rect(24, y, VITA_SCREEN_W - 48, 92, 0x80601010);
+        y += 6;
+        y += 19 * TextWrap(40, y, "WARNING: this overwrites the mod's own files and CANNOT be undone. "
+                                  "Keep a copy on a PC if you may want the originals back (or another HD size).",
+                           kYellow, 0.8f, fit, 2, 19);
+        y += 19 * TextWrap(40, y, "It takes a long time - up to an hour or more for a big pack with movies. "
+                                  "Keep the Vita on the charger and don't close the game.",
+                           kYellow, 0.8f, fit, 2, 19);
+        y = 196;
+        for (int i = 0; i < n; ++i) {
+            Text(40, y, "-", kWhite, 0.8f);
+            y += 19 * TextWrap(58, y, what[i], kWhite, 0.8f, CharsFit(58, VITA_SCREEN_W - 40, 0.8f), 2, 19) + 6;
+        }
+
+        Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 62, 0xE0100808);
+        Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 2, kAccent);
+        Text(24, VITA_SCREEN_H - 44, "HOLD X 3 SECONDS TO START    CIRCLE CANCEL", kGrey, 0.8f);
+        if (held > 0) Rect(24, VITA_SCREEN_H - 14, (VITA_SCREEN_W - 48) * held, 6, kAccent);
+        Flush();
+        vglSwapBuffers(GL_FALSE);
+    }
+}
+
+// Shared with the worker threads.
+Plan s_plan;
+volatile int s_optNext = 0, s_optDone = 0, s_optFailed = 0, s_optStop = 0, s_optRunning = 0;
+const int kMovieWorkers = 3;
+volatile double s_movieFrac[kMovieWorkers];
+volatile int s_movieCur[kMovieWorkers];       // plan index being converted, -1 idle
+
+int PicThread(SceSize, void*)
+{
+    for (;;) {
+        if (s_optStop) break;
+        const int i = __atomic_fetch_add(&s_optNext, 1, __ATOMIC_SEQ_CST);
+        if (i >= (int)s_plan.pics.size()) break;
+        if (!vita_hd_optimize_picture(s_plan.pics[i].path.c_str(), s_plan.pics[i].mask ? TRUE : FALSE)) {
+            __atomic_fetch_add(&s_optFailed, 1, __ATOMIC_SEQ_CST);
+        }
+        __atomic_fetch_add(&s_optDone, 1, __ATOMIC_SEQ_CST);
+    }
+    __atomic_fetch_sub(&s_optRunning, 1, __ATOMIC_SEQ_CST);
+    return sceKernelExitDeleteThread(0);
+}
+
+void MovieProgress(void* user, double f) { s_movieFrac[(int)(intptr_t)user] = f; }
+
+// One movie at a time per worker; FFmpeg itself runs single-threaded here.
+int MovieThread(SceSize, void* argp)
+{
+    const int me = *(const int*)argp;
+    for (;;) {
+        if (s_optStop) break;
+        const int i = __atomic_fetch_add(&s_optNext, 1, __ATOMIC_SEQ_CST);
+        if (i >= (int)s_plan.movies.size()) break;
+        s_movieCur[me] = i;
+        s_movieFrac[me] = 0;
+        const PlanMovie& mv = s_plan.movies[i];
+        void* user = (void*)(intptr_t)me;
+        const BOOL ok = mv.kind == MOVIE_REMUX
+            ? vita_movie_remux(mv.path.c_str(), MovieProgress, user, &s_optStop)
+            : vita_movie_transcode(mv.path.c_str(), MovieProgress, user, &s_optStop);
+        if (!ok && !s_optStop) __atomic_fetch_add(&s_optFailed, 1, __ATOMIC_SEQ_CST);
+        if (!s_optStop) __atomic_fetch_add(&s_optDone, 1, __ATOMIC_SEQ_CST);
+        s_movieCur[me] = -1;
+    }
+    s_movieCur[me] = -1;
+    __atomic_fetch_sub(&s_optRunning, 1, __ATOMIC_SEQ_CST);
+    return sceKernelExitDeleteThread(0);
+}
+
+std::string BaseName(const std::string& p)
+{
+    const size_t slash = p.rfind('/');
+    return slash == std::string::npos ? p : p.substr(slash + 1);
+}
+
+// Runs the plan with a progress screen. Returns a summary for the toast.
+void RunOptimize(const Mod& m, char* summary, size_t summarySize)
+{
+    const int clockBefore = scePowerGetArmClockFrequency();
+    scePowerSetArmClockFrequency(444);
+    s_optStop = s_optFailed = 0;
+    const SceUInt64 start = sceKernelGetProcessTimeWide();
+    unsigned int prev = 0xFFFFFFFF;
+    PadPressed(&prev);
+    const char* footer = "CIRCLE  STOP (WHAT IS DONE STAYS DONE - RUN OPTIMIZE AGAIN TO FINISH)";
+    char title[96];
+    snprintf(title, sizeof(title), "OPTIMIZING %s", m.name.c_str());
+
+    // 1. Unused files: quick.
+    int deleted = 0;
+    for (const std::string& f : s_plan.junkFiles) if (sceIoRemove(f.c_str()) >= 0) ++deleted;
+    for (const std::string& d : s_plan.junkDirs) sceIoRmdir(d.c_str());
+
+    // 2. Pictures, two cores.
+    const int pics = (int)s_plan.pics.size();
+    s_optNext = s_optDone = 0;
+    s_optRunning = 2;
+    const int cores[2] = { 0x20000, 0x40000 };      // SCE_KERNEL_CPU_MASK_USER_1 / _2
+    for (int i = 0; i < 2; ++i) {
+        const SceUID t = sceKernelCreateThread("re1_optpic", PicThread, 0x10000100, 0x20000, 0, cores[i], NULL);
+        if (t < 0 || sceKernelStartThread(t, 0, NULL) < 0) {
+            if (t >= 0) sceKernelDeleteThread(t);
+            __atomic_fetch_sub(&s_optRunning, 1, __ATOMIC_SEQ_CST);
+        }
+    }
+    while (s_optRunning > 0) {
+        sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND);
+        const int done = s_optDone;
+        const double secs = (double)(sceKernelGetProcessTimeWide() - start) / 1e6;
+        char line2[160] = "";
+        if (s_optStop) snprintf(line2, sizeof(line2), "Stopping after the pictures being converted now...");
+        else if (done > 0) {
+            const int left = (int)(secs / done * (pics - done) / 60.0 + 0.5);
+            if (left < 1) snprintf(line2, sizeof(line2), "Less than a minute left for the pictures.");
+            else snprintf(line2, sizeof(line2), "About %d min left for the pictures.", left);
+        }
+        ProgressScreen(title, "Converting HD pictures", line2, done, pics, -1, footer);
+        if (PadPressed(&prev) & SCE_CTRL_CIRCLE) s_optStop = 1;
+        sceKernelDelayThread(30000);
+    }
+    const int picsDone = s_optDone;
+
+    // 3. Movies, one at a time (ffmpeg uses the cores itself).
+    const int movies = (int)s_plan.movies.size();
+    int moviesDone = 0;
+    if (!s_optStop && movies > 0) {
+        s_optNext = s_optDone = 0;
+        static int ids[kMovieWorkers];
+        const int cores[kMovieWorkers] = { 0x20000, 0x40000, 0x10000 };    // USER_1, USER_2, USER_0
+        const int workers = movies < kMovieWorkers ? movies : kMovieWorkers;
+        s_optRunning = workers;
+        for (int i = 0; i < kMovieWorkers; ++i) { s_movieCur[i] = -1; s_movieFrac[i] = 0; }
+        for (int i = 0; i < workers; ++i) {
+            ids[i] = i;
+            const SceUID t = sceKernelCreateThread("re1_optmov", MovieThread, 0x10000100, 0x100000, 0,
+                                                   cores[i], NULL);
+            if (t < 0 || sceKernelStartThread(t, sizeof(int), &ids[i]) < 0) {
+                if (t >= 0) sceKernelDeleteThread(t);
+                __atomic_fetch_sub(&s_optRunning, 1, __ATOMIC_SEQ_CST);
+            }
+        }
+        const SceUInt64 mstart = sceKernelGetProcessTimeWide();
+        while (s_optRunning > 0) {
+            sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND);
+            const int done = s_optDone;
+            // The movies in flight: names, and how far along they are together.
+            std::string names;
+            double inFlight = 0;
+            int active = 0;
+            for (int i = 0; i < kMovieWorkers; ++i) {
+                const int cur = s_movieCur[i];
+                if (cur < 0 || cur >= movies) continue;
+                if (!names.empty()) names += ", ";
+                names += BaseName(s_plan.movies[cur].path);
+                inFlight += s_movieFrac[i];
+                ++active;
+            }
+            char line1[200], line2[160] = "";
+            snprintf(line1, sizeof(line1), "Converting %s", names.empty() ? "movies" : names.c_str());
+            const double secs = (double)(sceKernelGetProcessTimeWide() - mstart) / 1e6;
+            const double progress = done + inFlight;
+            if (s_optStop) {
+                snprintf(line2, sizeof(line2), "Stopping; the movies being converted are left as they were.");
+            } else if (progress > 0.05) {
+                const int left = (int)(secs / progress * (movies - progress) / 60.0 + 0.5);
+                if (left < 1) snprintf(line2, sizeof(line2), "Less than a minute left.");
+                else snprintf(line2, sizeof(line2), "About %d min left for the movies.", left);
+            }
+            ProgressScreen(title, line1, line2, done, movies, active > 0 ? inFlight / active : -1, footer);
+            if (PadPressed(&prev) & SCE_CTRL_CIRCLE) s_optStop = 1;
+            sceKernelDelayThread(30000);
+        }
+        moviesDone = s_optDone;
+    }
+
+    if (!s_optStop) {
+        // A note in the mod of what was done, for whoever looks later.
+        FILE* f = fopen((s_dataDir + "/mods/" + m.name + "/vita_optimized.txt").c_str(), "w");
+        if (f) {
+            fprintf(f, "Optimized for the PS Vita port by its mod manager.\n"
+                       "HD pictures at %d lines. This folder no longer holds the PC originals.\n",
+                    g_vitaVideo.hdMaxHeight);
+            fclose(f);
+        }
+    }
+    s_plan = Plan();
+    scePowerSetArmClockFrequency(clockBefore > 0 ? clockBefore : 333);
+
+    const int failed = s_optFailed;
+    snprintf(summary, summarySize, "%s: %d pictures, %d movies, %d files deleted%s",
+             s_optStop ? "Stopped (SELECT again to finish)" : "Optimized", picsDone, moviesDone, deleted,
+             failed ? ", some failed" : "");
+}
+
+// SELECT on the MODS page.
+void OptimizeFlow(Mod& m, char* toast, size_t toastSize)
+{
+    ProgressScreen("OPTIMIZE FOR VITA", "Looking at the mod...", "Checking every picture and movie.", 0, 0, -1, "");
+    s_plan = Plan();
+    MakePlan(m, s_plan);
+    if (s_plan.pics.empty() && s_plan.movies.empty() && s_plan.junkFiles.empty()) {
+        snprintf(toast, toastSize, "%s has nothing left to optimize.", m.name.c_str());
+        return;
+    }
+    if (!ConfirmOptimize(m, s_plan)) {
+        s_plan = Plan();
+        snprintf(toast, toastSize, "Optimize cancelled. Nothing was changed.");
+        return;
+    }
+    RunOptimize(m, toast, toastSize);
 }
 
 void ReleaseGl(void)
@@ -992,6 +1429,12 @@ void vita_mod_manager_run(void)
                 ++cursor;
                 changed = true;
             }
+            if (pressed & SCE_CTRL_SELECT) {
+                OptimizeFlow(s_mods[cursor], toast, sizeof(toast));
+                toastFrames = 600;
+                changed = true;
+                prev = 0xFFFFFFFF;          // the buttons held through it
+            }
             if (changed) AnalyseAll();
         } else if (count > 0) {
             const Row r = kPageRows[page][cursor];
@@ -1008,41 +1451,3 @@ void vita_mod_manager_run(void)
     ReleaseGl();
 }
 
-BOOL vita_mod_manager_progress(const char* title, const char* line, int done, int total)
-{
-    if (s_font == 0) {
-        MakeFont();
-        MakeBackdrop();
-    }
-    BeginFrame();
-    if (s_backdrop) Image(s_backdrop, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0xFF505050);
-    Rect(0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0x99000000);
-    Rect(0, 0, VITA_SCREEN_W, 64, 0xE0100808);
-    Rect(0, 64, VITA_SCREEN_W, 2, kAccent);
-    Text(24, 10, "RESIDENT EVIL", kAccent, 1.3f);
-    Text(24, 38, title, kGrey, 0.8f, CharsFit(24, VITA_SCREEN_W - 24, 0.8f));
-
-    const float barX = 60, barY = 250, barW = VITA_SCREEN_W - 120, barH = 24;
-    char count[64];
-    snprintf(count, sizeof(count), "%d / %d", done, total);
-    Text(barX, barY - 40, count, kWhite, 1.0f);
-    Rect(barX, barY, barW, barH, 0xFF303030);
-    if (total > 0) Rect(barX, barY, barW * (float)done / (float)total, barH, kAccent);
-    TextWrap(barX, barY + 44, line, kGrey, 0.8f, CharsFit(barX, barX + barW, 0.8f), 3, 19);
-
-    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 62, 0xE0100808);
-    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 2, kAccent);
-    Text(24, VITA_SCREEN_H - 44, "CIRCLE  STOP AND PLAY (THE REST IS PREPARED NEXT TIME)", kGrey, 0.8f);
-    Flush();
-    vglSwapBuffers(GL_FALSE);
-
-    SceCtrlData pad;
-    memset(&pad, 0, sizeof(pad));
-    sceCtrlPeekBufferPositive(0, &pad, 1);
-    return (pad.buttons & SCE_CTRL_CIRCLE) ? TRUE : FALSE;
-}
-
-void vita_mod_manager_progress_end(void)
-{
-    ReleaseGl();
-}

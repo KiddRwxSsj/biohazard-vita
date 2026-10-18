@@ -1141,7 +1141,13 @@ static BOOL FfmpegCanDecode(const char* path)
     BOOL ok = TRUE;
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         const AVCodecParameters* par = fmt->streams[i]->codecpar;
-        if (par->codec_type == AVMEDIA_TYPE_VIDEO && avcodec_find_decoder(par->codec_id) == NULL) {
+        // Only the light codecs decode in real time on the CPU. H.264 (with
+        // tools/vita/build_ffmpeg.sh's FFmpeg) is there for the mod manager's
+        // movie conversion, not for playback.
+        if (par->codec_type == AVMEDIA_TYPE_VIDEO &&
+            (avcodec_find_decoder(par->codec_id) == NULL ||
+             (par->codec_id != AV_CODEC_ID_CINEPAK && par->codec_id != AV_CODEC_ID_MPEG4 &&
+              par->codec_id != AV_CODEC_ID_H263 && par->codec_id != AV_CODEC_ID_SVQ1))) {
             ok = FALSE;
         }
     }

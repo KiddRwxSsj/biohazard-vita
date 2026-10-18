@@ -149,6 +149,7 @@ if(VITA)
         src/platform/vita/assetcache.cpp
         src/platform/vita/hdpack.cpp
         src/platform/vita/modmanager.cpp
+        src/platform/vita/movieconv.cpp
         src/marni/MarniDX_Vita.cpp
     )
 
@@ -159,8 +160,21 @@ if(VITA)
     # file parsers; ARM defaults to unsigned.
     target_compile_options(residentevil PRIVATE -w -fsigned-char -fno-strict-aliasing)
 
+    # FFmpeg: the vdpm package, or one built with tools/vita/build_ffmpeg.sh
+    # (adds the H.264 decoder the mod manager needs to convert 4:4:4 movie
+    # packs on the console). -DRE1_FFMPEG_PREFIX=<its install prefix>.
+    set(RE1_FFMPEG_PREFIX "" CACHE PATH "FFmpeg built by tools/vita/build_ffmpeg.sh (optional)")
+    set(RE1_FFMPEG_LIBS avformat avcodec swscale swresample avutil)
+    if(RE1_FFMPEG_PREFIX)
+        target_include_directories(residentevil BEFORE PRIVATE "${RE1_FFMPEG_PREFIX}/include")
+        set(RE1_FFMPEG_LIBS)
+        foreach(l avformat avcodec swscale swresample avutil)
+            list(APPEND RE1_FFMPEG_LIBS "${RE1_FFMPEG_PREFIX}/lib/lib${l}.a")
+        endforeach()
+    endif()
+
     target_link_libraries(residentevil PRIVATE
-        avformat avcodec swresample avutil mp3lame mpg123 webp png16 z
+        ${RE1_FFMPEG_LIBS} mp3lame mpg123 turbojpeg webp png16 z
         vitaGL vitashark SceShaccCgExt taihen_stub SceShaccCg_stub mathneon
         SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub
         SceCommonDialog_stub SceAppUtil_stub SceCtrl_stub SceAudio_stub ScePower_stub SceAvPlayer_stub SceTouch_stub
