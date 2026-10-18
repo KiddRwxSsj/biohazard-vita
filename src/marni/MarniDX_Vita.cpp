@@ -772,6 +772,28 @@ void MarniDX::DrawSprite(float x, float y, float w, float h,
     float b = ( color        & 0xFF) / 255.0f;
     float a = ((color >> 24) & 0xFF) / 255.0f;
 
+    // A sprite is usually one cut-out of a sheet. Sampled bilinearly, its
+    // edge texels blend with the sheet's neighbouring texels - transparent
+    // black around a room mask's cut-outs - which drew faint dark lines
+    // across the backgrounds wherever two mask strips meet. Half a texel in
+    // from each edge keeps every sample inside the cut-out.
+    Impl* p = m_pImpl;
+    if (p != nullptr && tex != MARNI_NULL_HANDLE && tex < MARNI_MAX_TEXTURES &&
+        p->slots[tex].tex != 0 && p->slots[tex].w > 0 && p->slots[tex].h > 0 &&
+        (sampler != MARNI_SAMPLER_POINT || g_vitaVideo.linearFilter || p->slots[tex].smooth)) {
+        const float hu = 0.5f / (float)p->slots[tex].w;
+        const float hv = 0.5f / (float)p->slots[tex].h;
+        // Mirrored sprites have u1 < u0; move each edge towards the other.
+        if (fabsf(u1 - u0) > 2.0f * hu) {
+            const float su = (u1 > u0) ? hu : -hu;
+            u0 += su; u1 -= su;
+        }
+        if (fabsf(v1 - v0) > 2.0f * hv) {
+            const float sv = (v1 > v0) ? hv : -hv;
+            v0 += sv; v1 -= sv;
+        }
+    }
+
     float x1 = x + w, y1 = y + h;
     const float verts[6 * 8] = {
         x,  y,  u0, v0, r, g, b, a,
