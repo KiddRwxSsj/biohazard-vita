@@ -104,7 +104,7 @@ DWORD s_savingSince = 0;
 int   s_savingSlot  = 0;           // the thumbnail goes to the slot the save was asked for
 BOOL  s_confirmDelete = FALSE;
 BOOL  s_confirmModManager = FALSE;
-char  s_status[40] = "";
+char  s_status[64] = "";
 DWORD s_statusUntil = 0;
 
 MarniHandle s_thumbTex[PORT_QUICK_SLOT_COUNT];
@@ -496,7 +496,7 @@ void Activate(int item)
         // this restarts the app into the manager.
         if (!s_confirmModManager) {
             s_confirmModManager = TRUE;
-            SetStatus("X AGAIN: RESTART, UNSAVED PLAY IS LOST");
+            SetStatus("X AGAIN TO RESTART. UNSAVED PLAY IS LOST");
             return;
         }
         vita_mod_manager_relaunch();
@@ -556,6 +556,29 @@ void DrawText(MarniDX* dx, float x, float y, const char* text, DWORD color, floa
         dx->DrawSprite(x, y, cell, cell, u / tw, v / th, (u + 8.0f) / tw, (v + 8.0f) / th,
                        color, d3d->m_FontTexHandle, MARNI_SAMPLER_POINT, MARNI_BLEND_ALPHA);
     }
+}
+
+// The footer message, wrapped at a space onto a second line when it is wider
+// than the panel (16 px a character leaves 25 on the narrow pages).
+void DrawStatus(MarniDX* dx, float x, float y, float w, const char* text, DWORD color)
+{
+    const int fit = (int)((w - 48.0f) / 16.0f);
+    const int len = (int)strlen(text);
+    if (len <= fit) {
+        DrawText(dx, x + 24.0f, y, text, color);
+        return;
+    }
+    int cut = fit;
+    while (cut > 0 && text[cut] != ' ') --cut;
+    if (cut == 0) cut = fit;
+    char first[48];
+    snprintf(first, sizeof(first), "%.*s", cut, text);
+    DrawText(dx, x + 24.0f, y, first, color);
+    const char* rest = text + cut;
+    while (*rest == ' ') ++rest;
+    char second[48];
+    snprintf(second, sizeof(second), "%.*s", fit, rest);
+    DrawText(dx, x + 24.0f, y + 20.0f, second, color);
 }
 
 }  // namespace
@@ -699,7 +722,7 @@ void vita_overlay_draw(MarniDX* dx)
     const int slot = g_portQuickSlot;
     if (saves && !s_thumbLoaded[slot]) LoadThumbnail(dx, slot);
 
-    const float w = saves ? 720.0f : 456.0f, h = 336.0f;
+    const float w = saves ? 720.0f : 456.0f, h = 360.0f;   // room for a 2-line footer
     const float x = (VITA_SCREEN_W - w) / 2.0f;
     const float y = (VITA_SCREEN_H - h) / 2.0f;
 
@@ -728,7 +751,7 @@ void vita_overlay_draw(MarniDX* dx)
         if (value[0] != '\0') {
             char line[32];
             snprintf(line, sizeof(line), "< %s >", value);
-            DrawText(dx, x + 224.0f, rowY, line, color);
+            DrawText(dx, x + 240.0f, rowY, line, color);   // after the 13-letter HUD AUTO HIDE
         }
     }
 
@@ -748,10 +771,10 @@ void vita_overlay_draw(MarniDX* dx)
         }
     }
 
-    const float footY = y + h - 32.0f;
+    const float footY = y + h - 52.0f;
     if (s_status[0] != '\0' && (int)(s_statusUntil - plat_time_ms()) > 0) {
-        DrawText(dx, x + 24.0f, footY, s_status, 0xFFFFD040u);
+        DrawStatus(dx, x, footY, w, s_status, 0xFFFFD040u);
     } else if (g_vitaVideo.msaa != s_bootMsaa) {
-        DrawText(dx, x + 24.0f, footY, "MSAA: RESTART TO APPLY", 0xFF8080FFu);
+        DrawStatus(dx, x, footY, w, "MSAA: RESTART TO APPLY", 0xFF8080FFu);
     }
 }
