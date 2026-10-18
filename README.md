@@ -135,23 +135,28 @@ The full list of tested mods and how to install each one is in [docs/MODS.md](do
 
 The Classic REbirth background packs, the **Seamless HD Project** and **TeamX's HD mod**, work:
 copy the pack's `hires/` folder into a mod folder (`mods/SHDP/hires/bgd`, `mods/SHDP/hires/mask`).
-Backgrounds and the masks over them are swapped in for 591 room cameras. Pictures are decoded on a
-background thread and scaled to `HdMaxHeight` (480, 720 or 960, 720 by default), so a camera cut
-can show the original background for a moment on the first visit. The packs' character and item
-textures aren't supported yet.
+Backgrounds and the masks over them are swapped in for 591 room cameras, scaled to `HdMaxHeight`
+(480, 720 or 960, 720 by default). The packs' character and item textures aren't supported yet.
+
+Turn on **HD PRELOAD** in the mod manager so backgrounds never pop in: the first START after a
+pack is added prepares every picture once (a few minutes, about 800 MB for Seamless HD at 720),
+and from then on each camera's HD background is there the moment it appears. Without it, pictures
+are decoded as you play and a camera cut can show the original background for a moment.
 
 ### Movies
 
 Movies can be `.mp4` (H.264 with AAC audio): `mods/Movies/movie/capcom.mp4`. The Vita's decoder
-only plays 4:2:0 video, so packs exported as High 4:4:4 (or 10-bit, or HEVC) are skipped and the
-original movie plays; the mod manager tells you when that happens. Re-encode them on a PC with
-[`tools/vita/convert_movies.sh`](tools/vita/convert_movies.sh):
+only plays 4:2:0 H.264, so many packs (High 4:4:4, H.264 inside AVI) need converting once on a
+PC, and big 1280x960 ones are better scaled to 720; the mod manager tells you when a pack has movies it can't play.
+[`tools/vita/convert_movies.py`](tools/vita/convert_movies.py) does it automatically: give it the
+downloaded pack (or drag the folder onto `convert_movies.bat` on Windows) and it re-encodes only
+the movies that need it and writes a ready mod folder to copy into `mods/`.
 
 ```bash
-tools/vita/convert_movies.sh path/to/pack/movie out/Movies/movie 720
+python3 tools/vita/convert_movies.py path/to/pack
 ```
 
-It needs `ffmpeg` and keeps the file names, so the output folder goes straight into `mods/`.
+It needs `ffmpeg`. Download links for every tested mod are in [docs/MODS.md](docs/MODS.md).
 
 ## AI Assistance
 
