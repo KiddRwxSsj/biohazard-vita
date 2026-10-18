@@ -29,6 +29,7 @@ struct VitaVideoSettings {
     BOOL  fps60;            // in-between frame per tick, see MarniDX_Vita.cpp
     BOOL  hdTextures;       // use texture pack mods' hires/ folders (hdpack.cpp)
     int   hdMaxHeight;      // HD pictures are scaled down to this many lines
+    BOOL  hdPreload;        // prepare every HD picture before play, no pop-in (hdpack.cpp)
 };
 
 extern VitaVideoSettings g_vitaVideo;
@@ -96,6 +97,15 @@ void vita_mod_manager_relaunch(void);
 // is read (it needs the mod list); vita_hd_active once a pack is in use.
 void vita_hd_init(void);
 BOOL vita_hd_active(void);
+// [Vita] HdPreload: before the game starts, decode every HD picture of the
+// active packs that is not prepared yet into ux0:data/RE1/hdcache/, showing
+// progress through vita_mod_manager_progress. Circle stops it.
+void vita_hd_prepare(void);
+
+// modmanager.cpp: a full-screen progress page in the mod manager's style.
+// Returns TRUE when Circle was pressed. vita_mod_manager_progress_end frees it.
+BOOL vita_mod_manager_progress(const char* title, const char* line, int done, int total);
+void vita_mod_manager_progress_end(void);
 
 // Frames presented since boot (MarniDX_Vita Present), for the door trace.
 extern DWORD g_vitaPresentCount;

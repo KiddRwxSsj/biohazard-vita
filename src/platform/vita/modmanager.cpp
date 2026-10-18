@@ -192,15 +192,19 @@ void Image(GLuint tex, float x, float y, float w, float h, unsigned int argb)
     Quad(tex, x, y, w, h, 0, 0, 1, 1, argb);
 }
 
-// Draws `text`, at most `maxChars` of it; returns the x after the last glyph.
+// Draws `text`, at most `maxChars` of it (ending in "..." when it had to be
+// cut); returns the x after the last glyph.
 float Text(float x, float y, const char* text, unsigned int argb, float scale = 1.0f, int maxChars = 999)
 {
     if (s_font == 0) return x;
     const float aw = (float)(MENUFONT_COLS * MENUFONT_CELL_W);
     const float ah = (float)(MENUFONT_ROWS * MENUFONT_CELL_H);
     const float cw = MENUFONT_CELL_W * scale, chh = MENUFONT_CELL_H * scale;
-    for (int n = 0; text[n] != '\0' && n < maxChars; ++n, x += cw) {
-        const unsigned char c = (unsigned char)text[n];
+    const int len = (int)strlen(text);
+    const bool cut = len > maxChars && maxChars > 3;
+    const int shown = cut ? maxChars - 3 : (len < maxChars ? len : maxChars);
+    for (int n = 0; n < shown + (cut ? 3 : 0); ++n, x += cw) {
+        const unsigned char c = n < shown ? (unsigned char)text[n] : '.';
         if (c <= 32 || c > 126) continue;
         const int i = c - 32;
         const float u0 = (float)((i % MENUFONT_COLS) * MENUFONT_CELL_W) / aw;
@@ -208,6 +212,42 @@ float Text(float x, float y, const char* text, unsigned int argb, float scale = 
         Quad(s_font, x, y, cw, chh, u0, v0, u0 + MENUFONT_CELL_W / aw, v0 + MENUFONT_CELL_H / ah, argb);
     }
     return x;
+}
+
+// How many characters at `scale` fit between x and `right`.
+int CharsFit(float x, float right, float scale)
+{
+    return (int)((right - x) / (kCharW * scale));
+}
+
+// Word-wrapped `text`, `maxChars` a line, at most `maxLines` lines (the last
+// one cut with "..." if there is more). Returns the number of lines drawn.
+int TextWrap(float x, float y, const char* text, unsigned int argb, float scale,
+             int maxChars, int maxLines, float lineH)
+{
+    int lines = 0;
+    const char* p = text;
+    while (*p != '\0' && lines < maxLines) {
+        while (*p == ' ') ++p;
+        const int left = (int)strlen(p);
+        int n = left;
+        if (left > maxChars) {
+            n = maxChars;
+            while (n > 0 && p[n] != ' ') --n;      // break at the last space that fits
+            if (n == 0) n = maxChars;
+        }
+        char line[256];
+        const bool last = (lines == maxLines - 1);
+        if (last && left > n) {
+            Text(x, y + lines * lineH, p, argb, scale, maxChars);   // ellipsised
+        } else {
+            snprintf(line, sizeof(line), "%.*s", n < 255 ? n : 255, p);
+            Text(x, y + lines * lineH, line, argb, scale);
+        }
+        p += n;
+        ++lines;
+    }
+    return lines;
 }
 
 void TextRight(float right, float y, const char* text, unsigned int argb, float scale = 1.0f)
@@ -477,7 +517,7 @@ void Describe(const Mod& m, char* what, size_t whatSize, char* status, size_t st
         snprintf(status, statusSize, "INACTIVE: HD TEXTURES is off (VIDEO page)");
         *statusColor = kRed;
     } else if (m.replaces == 0 && m.badMovies > 0 && !hd) {
-        snprintf(status, statusSize, "INACTIVE: %d movies need re-encoding for the Vita (README)",
+        snprintf(status, statusSize, "INACTIVE: %d movies the Vita cannot play. Convert them on a PC with tools/vita/convert_movies (docs/MODS.md)",
                  m.badMovies);
         *statusColor = kRed;
     } else if (m.replaces == 0 && (!hd || m.hdUsable == 0)) {
@@ -492,7 +532,7 @@ void Describe(const Mod& m, char* what, size_t whatSize, char* status, size_t st
         if (m.shadowed > 0) n += snprintf(b + n, sizeof(b) - n, " (%d taken by a mod above)", m.shadowed);
         *statusColor = kGreen;
         if (m.badMovies > 0) {
-            snprintf(b + n, sizeof(b) - n, " - %d movies need re-encoding", m.badMovies);
+            snprintf(b + n, sizeof(b) - n, " - %d movies need converting (convert_movies)", m.badMovies);
             *statusColor = kYellow;
         }
         snprintf(status, statusSize, "%s", b);
@@ -518,14 +558,14 @@ const char* const kPageNames[PAGE_COUNT] = { "MODS", "GAME", "VIDEO", "GAMEPLAY"
 
 enum Row {
     ROW_REGION, ROW_MODE,
-    ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE,
+    ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE, ROW_HD_PRELOAD,
     ROW_AUTORUN, ROW_WEAPON, ROW_DOORS, ROW_STATUS_HUD, ROW_WEAPON_HUD, ROW_HUD_HIDE,
 };
 
 const std::vector<Row> kPageRows[PAGE_COUNT] = {
     {},
     { ROW_REGION, ROW_MODE },
-    { ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE },
+    { ROW_ASPECT, ROW_FILTER, ROW_GAMMA, ROW_MSAA, ROW_FPS, ROW_HD, ROW_HD_SIZE, ROW_HD_PRELOAD },
     { ROW_AUTORUN, ROW_WEAPON, ROW_DOORS, ROW_STATUS_HUD, ROW_WEAPON_HUD, ROW_HUD_HIDE },
 };
 
@@ -541,6 +581,7 @@ const char* RowLabel(Row r)
     case ROW_FPS:        return "FRAME RATE";
     case ROW_HD:         return "HD TEXTURES";
     case ROW_HD_SIZE:    return "HD TEXTURE SIZE";
+    case ROW_HD_PRELOAD: return "HD PRELOAD";
     case ROW_AUTORUN:    return "AUTO RUN";
     case ROW_WEAPON:     return "WEAPON SWAP";
     case ROW_DOORS:      return "SKIP DOORS";
@@ -563,6 +604,7 @@ const char* RowHelp(Row r)
     case ROW_FPS:        return "60: an extra frame between the game's 30 ticks. Logic stays at 30.";
     case ROW_HD:         return "Use the hires/ folder of texture pack mods (TeamX HD, Seamless HD).";
     case ROW_HD_SIZE:    return "HD pictures are scaled to this. Bigger is sharper and uses more memory.";
+    case ROW_HD_PRELOAD: return "Prepare every HD picture once when you press START (a few minutes the first time, about 1.2 GB on the card for Seamless HD at 720). Backgrounds then never pop in.";
     case ROW_AUTORUN:    return "Push forward to run, hold the run button to walk.";
     case ROW_WEAPON:     return "Flick the right stick to change weapon.";
     case ROW_DOORS:      return "No door animation: straight into the next room.";
@@ -587,6 +629,7 @@ void RowValue(Row r, char* out, size_t n)
     case ROW_MSAA:       if (g_vitaVideo.msaa) snprintf(out, n, "%dX", g_vitaVideo.msaa); else snprintf(out, n, "OFF"); break;
     case ROW_FPS:        snprintf(out, n, "%d", g_vitaVideo.fps60 ? 60 : 30); break;
     case ROW_HD:         snprintf(out, n, "%s", OnOff(g_vitaVideo.hdTextures)); break;
+    case ROW_HD_PRELOAD: snprintf(out, n, "%s", OnOff(g_vitaVideo.hdPreload)); break;
     case ROW_HD_SIZE:    snprintf(out, n, "%d LINES", g_vitaVideo.hdMaxHeight); break;
     case ROW_AUTORUN:    snprintf(out, n, "%s", OnOff(g_vitaGameplay.autoRun)); break;
     case ROW_WEAPON:     snprintf(out, n, "%s", OnOff(g_vitaGameplay.weaponSwitch)); break;
@@ -621,6 +664,7 @@ void RowChange(Row r, int dir)
         break;
     case ROW_FPS:        g_vitaVideo.fps60 = !g_vitaVideo.fps60; break;
     case ROW_HD:         g_vitaVideo.hdTextures = !g_vitaVideo.hdTextures; break;
+    case ROW_HD_PRELOAD: g_vitaVideo.hdPreload = !g_vitaVideo.hdPreload; break;
     case ROW_HD_SIZE: {
         static const int kSizes[3] = { 480, 720, 960 };
         int i = g_vitaVideo.hdMaxHeight >= 960 ? 2 : g_vitaVideo.hdMaxHeight >= 720 ? 1 : 0;
@@ -708,14 +752,14 @@ void Draw(int page, int cursor, int scroll, const char* toast)
                 snprintf(pos, sizeof(pos), "%d", n);
             }
             Text(58, y + 2, pos, kGold, 0.8f);
-            Text(82, y + 2, m.name.c_str(), m.enabled ? kWhite : kGrey, 1.0f, 30);
+            Text(82, y + 2, m.name.c_str(), m.enabled ? kWhite : kGrey, 1.0f, CharsFit(82, 450, 1.0f));
 
             char what[160], status[200];
             unsigned int sc;
             Describe(m, what, sizeof(what), status, sizeof(status), &sc);
             Text(460, y + 2, RegionTag(m), kGold, 0.8f);
             // Status, shortened to the column.
-            Text(560, y + 2, status, sc, 0.8f, 46);
+            Text(560, y + 2, status, sc, 0.8f, CharsFit(560, VITA_SCREEN_W - 20, 0.8f));
             if (sel) {
                 snprintf(help, sizeof(help), "%s", what);
                 helpColor = kWhite;
@@ -733,13 +777,14 @@ void Draw(int page, int cursor, int scroll, const char* toast)
             char what[160], status[200];
             unsigned int sc;
             Describe(s_mods[cursor], what, sizeof(what), status, sizeof(status), &sc);
-            Rect(16, 412, VITA_SCREEN_W - 32, 58, 0xC0000000);
-            Text(28, 416, status, sc, 0.8f, 76);
-            char extra[200];
+            Rect(16, 412, VITA_SCREEN_W - 32, 64, 0xC0000000);
+            const int perLine = CharsFit(28, VITA_SCREEN_W - 28, 0.8f);
+            const int used = TextWrap(28, 415, status, sc, 0.8f, perLine, 2, 19);
+            char extra[240];
             const Mod& m = s_mods[cursor];
             snprintf(extra, sizeof(extra), "%s%s", what,
                      m.pcOnly ? "  (its PC .dll/.asi files are not needed here)" : "");
-            Text(28, 442, extra, kGrey, 0.75f, 84);
+            TextWrap(28, 415 + used * 19, extra, kGrey, 0.8f, perLine, 3 - used, 19);
         }
     } else {
         const std::vector<Row>& rows = kPageRows[page];
@@ -767,8 +812,8 @@ void Draw(int page, int cursor, int scroll, const char* toast)
                 }
             }
         }
-        Rect(16, 412, VITA_SCREEN_W - 32, 58, 0xC0000000);
-        Text(28, 428, help, kGrey, 0.8f, 76);
+        Rect(16, 412, VITA_SCREEN_W - 32, 64, 0xC0000000);
+        TextWrap(28, 415, help, kGrey, 0.8f, CharsFit(28, VITA_SCREEN_W - 28, 0.8f), 3, 19);
         help[0] = '\0';
     }
 
@@ -776,7 +821,7 @@ void Draw(int page, int cursor, int scroll, const char* toast)
     Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 62, 0xE0100808);
     Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 2, kAccent);
     if (toast != NULL && toast[0] != '\0') {
-        Text(24, VITA_SCREEN_H - 44, toast, kYellow, 0.85f);
+        Text(24, VITA_SCREEN_H - 44, toast, kYellow, 0.85f, CharsFit(24, VITA_SCREEN_W - 246, 0.85f));
     } else if (page == PAGE_MODS) {
         Text(24, VITA_SCREEN_H - 44, "X ON/OFF   SQUARE MOVE UP   TRIANGLE MOVE DOWN", kGrey, 0.8f);
     } else {
@@ -787,6 +832,16 @@ void Draw(int page, int cursor, int scroll, const char* toast)
 
     Flush();
     vglSwapBuffers(GL_FALSE);
+}
+
+void ReleaseGl(void)
+{
+    if (s_font) glDeleteTextures(1, &s_font);
+    if (s_backdrop) glDeleteTextures(1, &s_backdrop);
+    if (s_white) glDeleteTextures(1, &s_white);
+    s_font = s_backdrop = s_white = s_batchTex = 0;
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
 }
 
 void Save(void)
@@ -950,11 +1005,44 @@ void vita_mod_manager_run(void)
 
     Draw(page, cursor, scroll, "Saving and starting the game...");
     Save();
+    ReleaseGl();
+}
 
-    if (s_font) glDeleteTextures(1, &s_font);
-    if (s_backdrop) glDeleteTextures(1, &s_backdrop);
-    if (s_white) glDeleteTextures(1, &s_white);
-    s_font = s_backdrop = s_white = s_batchTex = 0;
-    glDisable(GL_TEXTURE_2D);
-    glDisable(GL_BLEND);
+BOOL vita_mod_manager_progress(const char* title, const char* line, int done, int total)
+{
+    if (s_font == 0) {
+        MakeFont();
+        MakeBackdrop();
+    }
+    BeginFrame();
+    if (s_backdrop) Image(s_backdrop, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0xFF505050);
+    Rect(0, 0, VITA_SCREEN_W, VITA_SCREEN_H, 0x99000000);
+    Rect(0, 0, VITA_SCREEN_W, 64, 0xE0100808);
+    Rect(0, 64, VITA_SCREEN_W, 2, kAccent);
+    Text(24, 10, "RESIDENT EVIL", kAccent, 1.3f);
+    Text(24, 38, title, kGrey, 0.8f, CharsFit(24, VITA_SCREEN_W - 24, 0.8f));
+
+    const float barX = 60, barY = 250, barW = VITA_SCREEN_W - 120, barH = 24;
+    char count[64];
+    snprintf(count, sizeof(count), "%d / %d", done, total);
+    Text(barX, barY - 40, count, kWhite, 1.0f);
+    Rect(barX, barY, barW, barH, 0xFF303030);
+    if (total > 0) Rect(barX, barY, barW * (float)done / (float)total, barH, kAccent);
+    TextWrap(barX, barY + 44, line, kGrey, 0.8f, CharsFit(barX, barX + barW, 0.8f), 3, 19);
+
+    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 62, 0xE0100808);
+    Rect(0, VITA_SCREEN_H - 62, VITA_SCREEN_W, 2, kAccent);
+    Text(24, VITA_SCREEN_H - 44, "CIRCLE  STOP AND PLAY (THE REST IS PREPARED NEXT TIME)", kGrey, 0.8f);
+    Flush();
+    vglSwapBuffers(GL_FALSE);
+
+    SceCtrlData pad;
+    memset(&pad, 0, sizeof(pad));
+    sceCtrlPeekBufferPositive(0, &pad, 1);
+    return (pad.buttons & SCE_CTRL_CIRCLE) ? TRUE : FALSE;
+}
+
+void vita_mod_manager_progress_end(void)
+{
+    ReleaseGl();
 }
