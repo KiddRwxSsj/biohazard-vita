@@ -365,3 +365,12 @@ unsigned char plat_pad_button_glyph(int)
 {
     return 0;   // generic pads: keep the numbered labels
 }
+
+BOOL plat_file_exists(const char* path)
+{
+    char norm[1024];
+    FILE* f = fopen(plat_normalize_path(path, norm, sizeof(norm)), "rb");
+    if (f == NULL) return FALSE;
+    fclose(f);
+    return TRUE;
+}

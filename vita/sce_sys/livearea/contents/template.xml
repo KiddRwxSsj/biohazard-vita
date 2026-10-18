@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<livearea style="ad0" format-ver="01.00" content-rev="1"> 
+<livearea style="psmobile" format-ver="01.00" content-rev="1">
 	<livearea-background>
-		<image>bg.png</image> 
+		<image>bg.png</image>
 	</livearea-background>
 
-	<frame id='frame1' multi='o' autoflip='1' >  
-		<liveitem> 
-			<target>psla:eboot</target>
-			<image y="160" x="-225" width="336" height="190">startup.png</image>   
+	<gate>
+		<startup-image>startup.png</startup-image>
+	</gate>
+
+	<!-- Starts the game with -modmanager: the mod manager opens before it boots
+	     (src/platform/vita/modmanager.cpp reads it with sceAppUtilAppEventParseLiveArea). -->
+	<frame id="frame4">
+		<liveitem>
+			<target>psla:-modmanager</target>
+			<text align="right" text-align="right" word-wrap="off" ellipsis="on">
+				<str size="22" color="#ffffff" bold="on" shadow="on">Mod Manager &amp; Settings</str>
+			</text>
 		</liveitem>
 	</frame>
 </livearea>

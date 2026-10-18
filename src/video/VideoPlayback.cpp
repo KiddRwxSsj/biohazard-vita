@@ -238,6 +238,12 @@ static BOOL PreferModernSibling(const char* aviPath, char* out, size_t size)
     char normalized[MAX_PATH];
     plat_normalize_path(candidatePath, normalized, sizeof(normalized));
     if (!FileReadable(normalized)) return FALSE;
+    // An MP4 the platform cannot decode (a 4:4:4 movie pack on the Vita) would
+    // end without a frame; the .avi this replaces still plays.
+    if (!plat_video_can_play(normalized)) {
+        dbg_printf("[VIDEO] %s cannot be decoded here - playing the .avi\n", normalized);
+        return FALSE;
+    }
 
     strcpy_s(out, size, normalized);
     return TRUE;
@@ -266,6 +272,15 @@ BOOL CheckVideoFileExists(const char* filename)
     char normalized[MAX_PATH];
     if (!NormalizeVideoPath(filename, normalized, sizeof(normalized))) {
         return FALSE;
+    }
+
+    // A mod's .avi this platform cannot decode (H.264 in AVI on the Vita):
+    // the game's own movie rather than a cutscene that skips.
+    if (FileReadable(normalized) && !plat_video_can_play(normalized)) {
+        char base[MAX_PATH];
+        const char* basePath = ResolveAssetRootNoMods(filename, base, sizeof(base));
+        plat_normalize_path(basePath, normalized, sizeof(normalized));
+        dbg_printf("[VIDEO] mod movie cannot be decoded here - playing %s\n", normalized);
     }
 
     if (!FileReadable(normalized)) {

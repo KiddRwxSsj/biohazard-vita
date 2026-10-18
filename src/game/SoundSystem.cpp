@@ -581,6 +581,16 @@ void load_character_sfx(unsigned char charId)
 // bgm_fade_out_all (0x004800e0)
 // Fades out and destroys all BGM and secondary sound banks.
 // ============================================================================
+// Port: the frame waits below let a DirectSound buffer stop before it is
+// released. The Vita's mixer (platform/vita/audio.cpp) stops and frees a bank
+// under its own lock, so there they only held the door on a black screen for
+// six frames whenever the music changed.
+#if defined(__vita__)
+#define BGM_STOP_WAIT() ((void)0)
+#else
+#define BGM_STOP_WAIT() Task_sleep(1)
+#endif
+
 static void bgm_fade_out_all(void)
 {
     // mute all secondary sound banks
@@ -589,7 +599,7 @@ static void bgm_fade_out_all(void)
             set_volume(g_SndBank[i].handle, 0xffffd8f1);
         }
     }
-    Task_sleep(1);
+    BGM_STOP_WAIT();
 
     // stop all secondary sound banks
     for (int i = 0; i < 3; i++) {
@@ -600,7 +610,7 @@ static void bgm_fade_out_all(void)
 
     // wait 4 frames
     for (int i = 0; i < 4; i++) {
-        Task_sleep(1);
+        BGM_STOP_WAIT();
     }
 
     // stop and destroy main BGM bank
@@ -610,7 +620,7 @@ static void bgm_fade_out_all(void)
         g_BgmSoundBank = 0;
     }
 
-    Task_sleep(1);
+    BGM_STOP_WAIT();
 
     // destroy all secondary banks
     for (int i = 0; i < 3; i++) {

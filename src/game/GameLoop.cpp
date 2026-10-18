@@ -86,6 +86,7 @@ int game_loop(void)
             fade_update();
         }
         g_portDoorSkipped = 0;
+        port_room_trace("game_loop resumed");
 
         g_SpecialRoomLightState = (short)g_int_008f8898;
         Task_sleep(1);
@@ -145,6 +146,40 @@ LAB_00480c33:
                     }
                 }
             }
+
+#ifdef RE1_AUTODOOR
+            // Test harness, Vita3K build only (tools/vita3k/build.sh): every 4 s of
+            // gameplay, go through the room's first unlocked door so the door
+            // trace (room.log) can be collected without driving the game.
+            {
+                extern int door_try_enter(unsigned char* entry);
+                static DWORD s_autoDoorFrames = 0;
+                // ux0:data/RE1/quickload.flag: quick load slot 1 once, no doors.
+                static int s_quickTest = -1;
+                if (s_quickTest < 0) {
+                    FILE* qf = fopen("ux0:data/RE1/quickload.flag", "rb");
+                    s_quickTest = qf ? 1 : 0;
+                    if (qf) fclose(qf);
+                }
+                if (s_quickTest == 1 && ++s_autoDoorFrames >= 60) {
+                    s_quickTest = 2;
+                    g_portQuickSlot = 0;
+                    g_portQuickLoadRequest = 1;
+                }
+                if (s_quickTest == 0 && g_openMenuFlag == 0 && (g_main_state_flags & MSF_MENU_ACTIVE) == 0 &&
+                    ++s_autoDoorFrames >= 120) {
+                    s_autoDoorFrames = 0;
+                    for (int slot = 0; slot < 24; ++slot) {
+                        unsigned char* entry = &g_RoomActionTable[slot * 12];
+                        if (entry[0] != 1) continue;
+                        unsigned char* record = *(unsigned char**)(entry + 8);
+                        if ((record[0x0c] & 0x80) != 0) continue;
+                        door_try_enter(entry);
+                        break;
+                    }
+                }
+            }
+#endif
 
             // Port: the status-screen HUD (Globals.h). Not over a menu, a door, a
             // death or the attract demo, which replays with the game's own input.
@@ -545,6 +580,7 @@ switchD_00480ff4_caseD_2:
                     g_message_flags = g_short_message_flags | 0x200;
                     g_openMenuFlag = 0;
                     FUN_00473f10((int*)g_ScenarioFlags, SCENARIO_FLAG_MENU_FADE_LATCH);
+                    port_room_trace("playable");
                 }
                 goto LAB_00480c33;
             }

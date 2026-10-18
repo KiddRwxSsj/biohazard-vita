@@ -27,6 +27,8 @@ struct VitaVideoSettings {
     float gamma;            // 1.0 = untouched
     int   msaa;             // 0, 2 or 4
     BOOL  fps60;            // in-between frame per tick, see MarniDX_Vita.cpp
+    BOOL  hdTextures;       // use texture pack mods' hires/ folders (hdpack.cpp)
+    int   hdMaxHeight;      // HD pictures are scaled down to this many lines
 };
 
 extern VitaVideoSettings g_vitaVideo;
@@ -56,6 +58,8 @@ void vita_hud_reset_layout(void);
 extern BOOL g_vitaVideoDirty;
 
 void vita_load_video_settings(void);
+void vita_config_write(const char* section, const char* const* keys,
+                       const char* const* values, int count);
 void vita_save_video_settings(void);
 void MarniVita_ApplyVideoSettings(void);
 
@@ -66,6 +70,35 @@ BOOL vita_overlay_input(unsigned int buttons);
 BOOL vita_overlay_visible(void);
 void vita_overlay_before_draw(MarniDX* dx);
 void vita_overlay_draw(MarniDX* dx);
+
+// assetcache.cpp - listings, data cache and prefetch for the asset tree.
+// vita_asset_load reads a whole file into `buffer` (LoadFile's contract) and
+// returns its size, or (size_t)-1. vita_asset_read_all returns a malloc'd
+// copy of a cached file or NULL; a miss is read by the caller and offered back
+// with vita_asset_store. vita_asset_cache_reset drops everything (the mod
+// manager changes what the folders hold).
+size_t vita_asset_load(const char* path, void* buffer);
+void*  vita_asset_read_all(const char* path, size_t* outSize);
+void   vita_asset_store(const char* path, const void* data, size_t size);
+void   vita_asset_cache_reset(void);
+
+// modmanager.cpp - the boot-time mod manager / settings screen.
+// _requested: launched with -modmanager, from the LiveArea link, or with
+// SELECT held. _run blocks until START and writes config.ini. _event polls
+// for the LiveArea link tapped while the game runs; _relaunch restarts the
+// app straight into the manager.
+BOOL vita_mod_manager_requested(int argc, char** argv);
+void vita_mod_manager_run(void);
+BOOL vita_mod_manager_event(void);
+void vita_mod_manager_relaunch(void);
+
+// hdpack.cpp - Classic REbirth texture packs. vita_hd_init after config.ini
+// is read (it needs the mod list); vita_hd_active once a pack is in use.
+void vita_hd_init(void);
+BOOL vita_hd_active(void);
+
+// Frames presented since boot (MarniDX_Vita Present), for the door trace.
+extern DWORD g_vitaPresentCount;
 
 // Where the game is drawn on the panel, in GL viewport terms (y from the bottom).
 void vita_game_box(int* x, int* y, int* w, int* h);

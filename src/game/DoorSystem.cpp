@@ -1454,6 +1454,86 @@ int FUN_0048f330(unsigned char param)
 // stage; >= 0x20 also changes stage, as (dest >> 5) - 1, with +5 applied once
 // g_ScenarioFlags bit 0 is set (the second-visit stage variants).
 // ============================================================================
+// ============================================================================
+// Port: room prefetch (Globals.h, platform/vita/assetcache.cpp)
+//
+// Queues the files a room will load so a background thread can have them in
+// memory before the door is used: the list that room loaded last time, plus
+// the ones its name alone gives away (RDT, one pak per camera, the masks) for
+// a room not visited yet. Paths that do not exist are dropped by the cache
+// from its folder listings, so the camera loops just go to 16.
+// ============================================================================
+static int PortDoorDestination(const unsigned char* record, int* stage, int* room)
+{
+    if ((record[0x0B] & 0x80) != 0) return 0;          // camera-only, no load
+    const unsigned char dest = record[0x0D];
+    *room = dest & 0x1f;
+    if (dest < 0x20) {
+        *stage = g_stageId;
+    } else {
+        *stage = (dest >> 5) - 1;
+        if ((Flg_ck((int)&g_ScenarioFlags, SCENARIO_FLAG_STAGE_VARIANT) != 0) && (*stage < 2)) {
+            *stage += 5;
+        }
+    }
+    return 1;
+}
+
+static void PortPrefetchPath(const char* path)
+{
+    char resolved[260];
+    port_prefetch_file(ResolveAssetRoot(path, resolved, sizeof(resolved)));
+}
+
+static void PortPrefetchRoom(int stage, int room)
+{
+    static const char hex[] = "0123456789abcdef";
+    port_prefetch_learned(stage * 32 + room);
+    if (stage < 0 || stage > 6) return;                 // DC arrange stages: learned list only
+
+    char path[96];
+    const int variant = (g_main_state_flags & MSF_CHAR_VARIANT) ? 1 : 0;
+    sprintf(path, GAME_DATA_ROOT "stage%c\\room%c%c%c%c.rdt",
+            hex[stage + 1], hex[stage + 1], hex[room >> 4], hex[room & 0xF], hex[variant]);
+    PortPrefetchPath(path);
+
+    // Stages 6 and 7 reuse stage 1 and 2's art (load_room_bg's revisit fold).
+    const int art = stage > 4 ? stage - 5 : stage;
+    for (int cam = 0; cam < 16; ++cam) {
+        sprintf(path, GAME_DATA_ROOT "stage%c\\rc%c%c%c%c.pak",
+                hex[art + 1], hex[art + 1], hex[room >> 4], hex[room & 0xF], hex[cam]);
+        PortPrefetchPath(path);
+    }
+    for (int cam = 0; cam < 10; ++cam) {
+        sprintf(path, GAME_DATA_ROOT "objspr\\osp0%c%c%c%c.pak",
+                '0' + art, '0' + room / 10, '0' + room % 10, '0' + cam);
+        PortPrefetchPath(path);
+    }
+}
+
+void port_prefetch_neighbours(void)
+{
+    for (int slot = 0; slot < 24; ++slot) {
+        const unsigned char* entry = &g_RoomActionTable[slot * 12];
+        if (entry[0] != 1) continue;                    // room_check_actions[1] = door_try_enter
+        const unsigned char* record = *(unsigned char* const*)(entry + 8);
+        int stage, room;
+        if (record == nullptr) continue;
+        if (g_portSkipDoors == 0 && record[0x0A] < 0x22) {
+            PortPrefetchPath(g_doorFileNameTable[record[0x0A]]);   // the .dor DoorLoadData reads
+        }
+        if (PortDoorDestination(record, &stage, &room)) {
+            PortPrefetchRoom(stage, room);
+        }
+    }
+}
+
+void port_prefetch_door(const unsigned char* record)
+{
+    int stage, room;
+    if (PortDoorDestination(record, &stage, &room)) PortPrefetchRoom(stage, room);
+}
+
 void room_transition_load(void)
 {
     unsigned char* record = (unsigned char*)g_pendingDoorRecord;
@@ -1486,9 +1566,12 @@ void room_transition_load(void)
         g_SndPanVol[i].pan    = 0x5f;
     }
 
+    port_room_trace("room_transition_load");
     load_room_sfx(g_nextRoomSfxId);
+    port_room_trace("room sfx loaded");
     if (g_portDoorSkipped == 0) {
         door_system_load_data();        // FUN_00412300 - load the .dor + start the texture page
+        port_room_trace("door data loaded");
     }
 
     // The original does:
@@ -1500,8 +1583,14 @@ void room_transition_load(void)
     // bit 0x4000000 on init, animates the door (black rect, camera dolly, door
     // panels through the TMD queue) while this task loads the destination room,
     // and clears the bit on teardown. The wait loop below polls that bit.
-    door_system_start_animation();
-    Task_sleep(1);
+    // Port: a skipped door has no animation, so the task is not started and
+    // nobody has to wait a frame for it. Its teardown's state resets are done
+    // below once the room is in (PortSkippedDoorTeardown).
+    if (g_portDoorSkipped == 0) {
+        door_system_start_animation();
+        Task_sleep(1);
+    }
+    port_room_trace("door task started");
 
     // 0x0048148c: place the player at the destination's entry point.
     //
@@ -1548,6 +1637,10 @@ void room_transition_load(void)
     // stage change needs the heavier init_room, which re-points the stage data
     // and BGM tables first.
     if ((flags & 0x80) == 0) {
+        int learnStage, learnRoom;
+        if (PortDoorDestination(record, &learnStage, &learnRoom)) {
+            port_prefetch_learn(learnStage * 32 + learnRoom);
+        }
         BuildEnemySnap();
         g_AttractMode_RoomCameraId = g_roomId;
         g_scaPoolPtr = g_scaPoolBase;
@@ -1568,14 +1661,27 @@ void room_transition_load(void)
         }
     }
 
+    port_room_trace("room loaded");
     g_AttractModeIdleTimer = 1;
     g_portDoorRoomReady = 1;
+    if (g_portDoorSkipped != 0) {
+        // What DoorAnimInit/DoorAnimTeardown leave behind for the game, minus
+        // the animation (DoorAnimInit sets bit MSF_ROOM_TRANSITION, which the
+        // teardown clears again, so it is simply never set).
+        g_bGameActive = 2;
+        g_SpriteAsyncFlag = 1;
+        g_main_state_flags2 &= ~MSF2_SND_BUSY;
+        g_fading_state = (short)0xFFFF;
+        g_imageBufferPtr = g_imageBufferDataA;
+        g_imageBufferPtr2 = g_imageBufferDataB;
+    }
     // Waits for the door-animation task to clear bit 0x4000000. That task is not
     // spawned yet, so nothing sets the bit and this falls straight through.
     while ((g_main_state_flags & MSF_ROOM_TRANSITION) != 0) {
         Task_sleep(1);
     }
 
+    port_room_trace("door animation over");
     // 0x0048156c: put the newly loaded room on screen. The camera-only branch has no
     // new data to build, so it re-runs the zone test instead.
     if ((flags & 0x80) == 0) {
@@ -1586,7 +1692,9 @@ void room_transition_load(void)
         check_camera_switch(1);
     }
 
+    port_room_trace("room on screen");
     update_room_bgm();
+    port_room_trace("bgm");
     if ((flags & 0x40) == 0) {
         play_sfx(0, 1, 0);
     }
@@ -1595,4 +1703,6 @@ void room_transition_load(void)
 
     g_AttractModeIdleTimer = 0;
     g_roomTransitionBusy   = 0;
+    port_prefetch_learn(-1);
+    port_room_trace("room_transition_load done");
 }

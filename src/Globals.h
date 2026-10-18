@@ -704,6 +704,50 @@ extern int           g_portSkipDoors;            // no door animation at all, bl
 extern int           g_portDoorRoomReady;        // room_transition_load: destination loaded, door may end
 extern int           g_portDoorSkipped;          // g_portSkipDoors latched per transition; game_loop skips the fade-in
 extern int           g_portSkipLoadMessage;      // next InitializeGame skips the "Loading game" message (one shot)
+// Port: room prefetch (the Vita's assetcache.cpp; no-ops elsewhere). A room
+// key is stage * 32 + room. port_prefetch_learn starts recording the files the
+// room with that key loads (-1 stops); port_prefetch_learned queues the list
+// recorded last time; port_prefetch_neighbours queues every room behind a door
+// of the current one (DoorSystem.cpp).
+#if defined(__vita__)
+void port_prefetch_file(const char* path);
+void port_prefetch_learned(int roomKey);
+void port_prefetch_learn(int roomKey);
+#else
+static inline void port_prefetch_file(const char*) {}
+static inline void port_prefetch_learned(int) {}
+static inline void port_prefetch_learn(int) {}
+#endif
+void port_prefetch_neighbours(void);
+void port_prefetch_door(const unsigned char* record);
+
+// Port: HD texture packs (the Vita's hdpack.cpp; no-ops elsewhere). Names are
+// the game files' own: "rc1000" for a background, "osp00001" for a mask sheet.
+// port_hd_background / port_hd_mask say what was just put on screen, from the
+// original picture; port_hd_poll swaps in the HD one once it is decoded and
+// must run before the frame's sprites are flushed; port_hd_prefetch queues a
+// decode ahead of time.
+#if defined(__vita__)
+void port_hd_background(const char* name);
+void port_hd_mask(const char* name, int slot);
+void port_hd_prefetch(const char* name);
+void port_hd_poll(void);
+#else
+static inline void port_hd_background(const char*) {}
+static inline void port_hd_mask(const char*, int) {}
+static inline void port_hd_prefetch(const char*) {}
+static inline void port_hd_poll(void) {}
+#endif
+extern char g_portBgName[12];                     // Room.cpp - the background display_image is showing
+
+// Port: door transition timeline, one line per stage with the milliseconds and
+// presented frames since the door was entered. The Vita writes it to
+// ux0:data/RE1/room.log when gameplay resumes; elsewhere it compiles away.
+#if defined(__vita__)
+void port_room_trace(const char* stage);
+#else
+static inline void port_room_trace(const char*) {}
+#endif
 extern int           g_portWeaponCycleRequest;   // +1 / -1 = equip the next / previous weapon, serviced by game_loop
 int port_cycle_equipped_weapon(int dir);          // MainMenu.cpp - 1 when a different weapon was equipped
 

@@ -4,8 +4,8 @@
 // it. It is drawn over whatever the game presented, right before the swap, in
 // the game's own 8x8 font from fontus.tim. While it is up the game keeps
 // running but sees an idle pad; stopping it outright would mean freezing the
-// task scheduler halfway through a frame. It has three pages - VIDEO,
-// GAMEPLAY and SAVES - flipped with L and R.
+// task scheduler halfway through a frame. It has three pages - QUICK SAVES
+// (the one it opens on), VIDEO and GAMEPLAY - flipped with L and R.
 //
 // Aspect, filter and gamma take effect on the next frame. MSAA is a vitaGL
 // init parameter, so it is saved and used from the next boot.
@@ -44,27 +44,27 @@ namespace {
 enum Item {
     ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_FRAME_RATE,
     ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
-    ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD,
+    ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD, ITEM_MOD_MANAGER,
     ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, ITEM_COUNT
 };
 
 const char* const kLabels[ITEM_COUNT] = {
     "ASPECT", "FILTER", "GAMMA", "MSAA", "FRAME RATE",
     "AUTO RUN", "WEAPON SWAP", "SKIP DOORS", "STATUS HUD", "WEAPON HUD",
-    "HUD AUTO HIDE", "EDIT HUD",
+    "HUD AUTO HIDE", "EDIT HUD", "MOD MANAGER",
     "SLOT", "QUICK SAVE", "QUICK LOAD", "DELETE", "CLOSE"
 };
 
-enum Page { PAGE_VIDEO, PAGE_GAMEPLAY, PAGE_SAVES, PAGE_COUNT };
+enum Page { PAGE_SAVES, PAGE_VIDEO, PAGE_GAMEPLAY, PAGE_COUNT };
 
-const char* const kPageNames[PAGE_COUNT] = { "VIDEO", "GAMEPLAY", "SAVES" };
+const char* const kPageNames[PAGE_COUNT] = { "QUICK SAVES", "VIDEO", "GAMEPLAY" };
 
 // Rows per page, -1 terminated. CLOSE is on every page.
-const int kPageItems[PAGE_COUNT][8] = {
-    { ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_FRAME_RATE, ITEM_CLOSE, -1, -1 },
+const int kPageItems[PAGE_COUNT][10] = {
+    { ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, -1 },
+    { ITEM_ASPECT, ITEM_FILTER, ITEM_GAMMA, ITEM_MSAA, ITEM_FRAME_RATE, ITEM_CLOSE, -1 },
     { ITEM_AUTO_RUN, ITEM_WEAPON_SWAP, ITEM_SKIP_DOORS, ITEM_HEALTH_HUD, ITEM_AMMO_HUD,
-      ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD, ITEM_CLOSE },
-    { ITEM_SLOT, ITEM_QUICK_SAVE, ITEM_QUICK_LOAD, ITEM_DELETE, ITEM_CLOSE, -1, -1, -1 },
+      ITEM_HUD_AUTO_HIDE, ITEM_EDIT_HUD, ITEM_MOD_MANAGER, ITEM_CLOSE, -1 },
 };
 
 
@@ -86,7 +86,7 @@ BOOL  s_pinching    = FALSE;
 float s_pinchStartDist  = 0.0f;
 int   s_pinchStartScale = 100;
 BOOL s_waitRelease = FALSE;            // swallow the pad until the closing press is let go
-int  s_page        = PAGE_VIDEO;
+int  s_page        = PAGE_SAVES;
 int  s_cursor      = 0;           // row within the page
 int  s_bootMsaa    = -1;               // what vitaGL was started with
 unsigned int s_prevButtons = 0;
@@ -103,6 +103,7 @@ BOOL  s_saving     = FALSE;
 DWORD s_savingSince = 0;
 int   s_savingSlot  = 0;           // the thumbnail goes to the slot the save was asked for
 BOOL  s_confirmDelete = FALSE;
+BOOL  s_confirmModManager = FALSE;
 char  s_status[40] = "";
 DWORD s_statusUntil = 0;
 
@@ -123,7 +124,7 @@ BOOL InGameplay(void)
 int PageRows(int page)
 {
     int n = 0;
-    while (n < 8 && kPageItems[page][n] >= 0) ++n;
+    while (n < 10 && kPageItems[page][n] >= 0) ++n;
     return n;
 }
 
@@ -490,6 +491,16 @@ void Activate(int item)
         s_dragging = FALSE;
         s_pinching = FALSE;
         break;
+    case ITEM_MOD_MANAGER:
+        // Mods and the region are chosen before the game loads anything, so
+        // this restarts the app into the manager.
+        if (!s_confirmModManager) {
+            s_confirmModManager = TRUE;
+            SetStatus("X AGAIN: RESTART, UNSAVED PLAY IS LOST");
+            return;
+        }
+        vita_mod_manager_relaunch();
+        break;
     case ITEM_CLOSE:
         Close();
         break;
@@ -576,6 +587,18 @@ BOOL vita_overlay_input(unsigned int buttons)
         return TRUE;
     }
 
+    // The LiveArea's Mod Manager link tapped while the game runs: open the
+    // panel on the MOD MANAGER row instead of throwing the session away.
+    if (vita_mod_manager_event()) {
+        s_open = TRUE;
+        s_page = PAGE_GAMEPLAY;
+        s_cursor = 0;
+        while (s_cursor < PageRows(s_page) && kPageItems[s_page][s_cursor] != ITEM_MOD_MANAGER) ++s_cursor;
+        s_confirmModManager = TRUE;
+        SetStatus("X: RESTART INTO THE MOD MANAGER");
+        return TRUE;
+    }
+
     const BOOL tapped = CornerTapped();
     const BOOL chord = (buttons & kChord) == kChord && (pressed & kChord) != 0;
 
@@ -587,6 +610,7 @@ BOOL vita_overlay_input(unsigned int buttons)
     if (!s_open) {
         if (chord || tapped) {
             s_open = TRUE;
+            s_page = PAGE_SAVES;      // quick saves are what the panel is opened for most
             s_cursor = 0;
             s_confirmDelete = FALSE;
             for (int i = 0; i < PORT_QUICK_SLOT_COUNT; ++i) s_slotExists[i] = -1;
@@ -609,7 +633,10 @@ BOOL vita_overlay_input(unsigned int buttons)
     }
 
     const int rows = PageRows(s_page);
-    if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) s_confirmDelete = FALSE;
+    if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER)) {
+        s_confirmDelete = FALSE;
+        s_confirmModManager = FALSE;
+    }
     if (pressed & SCE_CTRL_UP)    s_cursor = (s_cursor + rows - 1) % rows;
     if (pressed & SCE_CTRL_DOWN)  s_cursor = (s_cursor + 1) % rows;
 
@@ -672,7 +699,7 @@ void vita_overlay_draw(MarniDX* dx)
     const int slot = g_portQuickSlot;
     if (saves && !s_thumbLoaded[slot]) LoadThumbnail(dx, slot);
 
-    const float w = saves ? 720.0f : 456.0f, h = 300.0f;
+    const float w = saves ? 720.0f : 456.0f, h = 336.0f;
     const float x = (VITA_SCREEN_W - w) / 2.0f;
     const float y = (VITA_SCREEN_H - h) / 2.0f;
 

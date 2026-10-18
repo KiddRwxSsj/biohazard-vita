@@ -868,3 +868,9 @@ void plat_video_set_window_mode(BOOL forVideo)
         SetWindowLongA(g_hWnd, GWL_STYLE, style & 0xFFFAFFFF | 0xC00000);
     }
 }
+
+BOOL plat_video_can_play(const char* path)
+{
+    (void)path;
+    return TRUE;
+}

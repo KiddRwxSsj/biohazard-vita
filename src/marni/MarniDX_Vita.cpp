@@ -52,6 +52,7 @@ struct MarniDX::Impl {
     struct TexSlot {
         GLuint tex = 0;
         int w = 0, h = 0;
+        bool smooth = false;    // always bilinear: an HD pack picture bigger than its box
     } slots[MARNI_MAX_TEXTURES];
 
     void ReleaseSlot(MarniHandle h) {
@@ -59,6 +60,7 @@ struct MarniDX::Impl {
         if (slots[h].tex != 0) glDeleteTextures(1, &slots[h].tex);
         slots[h].tex = 0;
         slots[h].w = slots[h].h = 0;
+        slots[h].smooth = false;
     }
 
     void ReleaseAll() {
@@ -70,6 +72,30 @@ struct MarniDX::Impl {
 };
 
 static MarniDX* g_pDX = nullptr;
+
+#ifdef RE1_AUTODOOR
+// Test build only: a CPU copy of every texture, so a frame's draws can be
+// rasterised offline (Vita3K does not draw the TMD models).
+static unsigned char* s_keepTex[MARNI_MAX_TEXTURES];
+static int s_keepW[MARNI_MAX_TEXTURES], s_keepH[MARNI_MAX_TEXTURES];
+static void MarniVita_KeepTexture(MarniHandle h, const void* rgba, int w, int h2)
+{
+    if (h >= MARNI_MAX_TEXTURES) return;
+    free(s_keepTex[h]);
+    s_keepTex[h] = (unsigned char*)malloc((size_t)w * h2 * 4);
+    if (s_keepTex[h]) memcpy(s_keepTex[h], rgba, (size_t)w * h2 * 4);
+    s_keepW[h] = w; s_keepH[h] = h2;
+}
+void MarniVita_DumpTexture(MarniHandle h, const char* path)
+{
+    if (h >= MARNI_MAX_TEXTURES || s_keepTex[h] == nullptr) return;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(&s_keepW[h], 4, 1, f); fwrite(&s_keepH[h], 4, 1, f);
+    fwrite(s_keepTex[h], 1, (size_t)s_keepW[h] * s_keepH[h] * 4, f);
+    fclose(f);
+}
+#endif
 
 MarniDX* Marni_DX() { return g_pDX; }
 
@@ -221,9 +247,9 @@ static void ApplyBlend(MarniBlend blend)
     }
 }
 
-static void ApplySampler(MarniSampler sampler)
+static void ApplySampler(MarniSampler sampler, bool smooth = false)
 {
-    GLint filter = (sampler == MARNI_SAMPLER_POINT && !g_vitaVideo.linearFilter)
+    GLint filter = (sampler == MARNI_SAMPLER_POINT && !g_vitaVideo.linearFilter && !smooth)
                  ? GL_NEAREST : GL_LINEAR;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
@@ -246,7 +272,7 @@ static void DrawBatchNow(MarniDX::Impl* p, const float* verts, int vertexCount,
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
-    ApplySampler(sampler);
+    ApplySampler(sampler, tex != MARNI_NULL_HANDLE && tex < MARNI_MAX_TEXTURES && p->slots[tex].smooth);
     ApplyBlend(blend);
 
     if (depthTest) {
@@ -586,16 +612,20 @@ void MarniDX::Present()
     if (p == nullptr || !p->ready) return;
 
     if (s_recording) {
+        // Off before anything is drawn: the panel's own draws go through
+        // DrawBatch too, and while recording they were appended to the list
+        // instead of drawn, so the in-between frame had no panel (flicker).
+        s_recording = false;
         Replay(p, 0.5f);
         SetPixelSpace(p, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
         vita_overlay_draw(this);
         ApplyGameViewport(p);
         vglSwapBuffers(GL_FALSE);
         Replay(p, 1.0f);
-        s_recording = false;
         ResetRecording();
     }
 
+    ++g_vitaPresentCount;
     vita_overlay_before_draw(this);
     SetPixelSpace(p, 0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
     vita_overlay_draw(this);
@@ -661,6 +691,9 @@ MarniHandle MarniDX::CreateTexture(int width, int height, int bpp,
                  GL_RGBA, GL_UNSIGNED_BYTE, upload);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+#ifdef RE1_AUTODOOR
+    MarniVita_KeepTexture(handle, upload, width, height);
+#endif
     free(converted);
 
     p->slots[handle].tex = tex;
@@ -703,6 +736,16 @@ void MarniDX::GetTextureSize(MarniHandle tex, int* outWidth, int* outHeight) con
     if (p == nullptr || tex == MARNI_NULL_HANDLE || tex >= MARNI_MAX_TEXTURES) return;
     if (outWidth)  *outWidth  = p->slots[tex].w;
     if (outHeight) *outHeight = p->slots[tex].h;
+}
+
+// Port: HD pack textures (platform/vita/hdpack.cpp) are drawn bilinear
+// whatever FILTER says, since they are scaled down into the game box.
+void MarniVita_SetTextureSmooth(MarniHandle tex)
+{
+    MarniDX* dx = Marni_DX();
+    if (dx == nullptr || dx->m_pImpl == nullptr) return;
+    if (tex == MARNI_NULL_HANDLE || tex >= MARNI_MAX_TEXTURES) return;
+    dx->m_pImpl->slots[tex].smooth = true;
 }
 
 void MarniDX::DestroyTexture(MarniHandle tex)

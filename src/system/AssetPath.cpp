@@ -256,6 +256,16 @@ int GetAssetModCount(void)
     return s_modCount;
 }
 
+const char* GetAssetModRoot(int i)
+{
+    return (i >= 0 && i < s_modCount) ? s_modRoots[i] : "";
+}
+
+const char* GetAssetModName(int i)
+{
+    return (i >= 0 && i < s_modCount) ? s_modNames[i] : "";
+}
+
 void SetAssetMode(const char* mode)
 {
     if (mode == NULL || mode[0] == '\0') {
@@ -365,6 +375,16 @@ int GetAssetVersion(void)
     return s_assetIsJpn;
 }
 
+static int s_skipMods = 0;
+
+const char* ResolveAssetRootNoMods(const char* path, char* out, size_t outSize)
+{
+    s_skipMods = 1;
+    const char* r = ResolveAssetRoot(path, out, outSize);
+    s_skipMods = 0;
+    return r;
+}
+
 const char* ResolveAssetRoot(const char* path, char* out, size_t outSize)
 {
     if (path == NULL) return NULL;
@@ -403,15 +423,29 @@ const char* ResolveAssetRoot(const char* path, char* out, size_t outSize)
 
     const char* tail = path + matchLen;
 
-    for (int i = 0; i < s_modCount; i++) {
-        char candidate[260];
-        if (sprintf_s(candidate, sizeof(candidate), "%s%s", s_modRoots[i], tail) < 0) continue;
-        char probeBuf[260];
-        const char* probe = plat_normalize_path(candidate, probeBuf, sizeof(probeBuf));
-        FILE* fp = fopen(probe, "rb");
-        if (fp == NULL) continue;
-        fclose(fp);
-        if (sprintf_s(out, outSize, "%s", candidate) >= 0) return out;
+    // A mod can also be packaged per region, as a copy of the install with the
+    // tree under USA/ or JPN/ (the original HQ audio mod ships JPN/Sound/...).
+    // The folder for the running region is searched first, then the mod's root.
+    // Sound and voice are the same files in both PC releases (both have the
+    // English voice track), so for those the other region's folder counts too.
+    const int sharedAudio = FallbackIsExpected(tail) &&
+        (tail[0] == 's' || tail[0] == 'S' || tail[0] == 'v' || tail[0] == 'V');
+    for (int i = 0; i < (s_skipMods ? 0 : s_modCount); i++) {
+        for (int pass = 0; pass < (sharedAudio ? 3 : 2); pass++) {
+            char candidate[260];
+            int n = pass == 0
+                ? sprintf_s(candidate, sizeof(candidate), "%s%s%c%s", s_modRoots[i],
+                            s_assetIsJpn ? "JPN" : "USA", PATH_SEP, tail)
+                : pass == 1
+                ? sprintf_s(candidate, sizeof(candidate), "%s%s", s_modRoots[i], tail)
+                : sprintf_s(candidate, sizeof(candidate), "%s%s%c%s", s_modRoots[i],
+                            s_assetIsJpn ? "USA" : "JPN", PATH_SEP, tail);
+            if (n < 0) continue;
+            char probeBuf[260];
+            const char* probe = plat_normalize_path(candidate, probeBuf, sizeof(probeBuf));
+            if (!plat_file_exists(probe)) continue;
+            if (sprintf_s(out, outSize, "%s", candidate) >= 0) return out;
+        }
     }
 
     // Content-mode overlay first (config.ini [Game] Mode). A non-OG mode ships
@@ -432,9 +466,7 @@ const char* ResolveAssetRoot(const char* path, char* out, size_t outSize)
         if (c >= 0) {
             char probeBuf[260];
             const char* probe = plat_normalize_path(candidate, probeBuf, sizeof(probeBuf));
-            FILE* fp = fopen(probe, "rb");
-            if (fp != NULL) {
-                fclose(fp);
+            if (plat_file_exists(probe)) {
                 int m = sprintf_s(out, outSize, "%s%s", s_overlayRoot, tail);
                 if (m >= 0) {
                     LogOverlayDecision(tail, 1);

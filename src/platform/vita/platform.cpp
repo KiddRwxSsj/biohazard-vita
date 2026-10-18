@@ -7,6 +7,8 @@
 #include "../platform.h"
 #include "vita.h"
 
+void port_room_trace(const char* stage);
+
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/clib.h>
 #include <psp2/kernel/sysmem.h>
@@ -125,7 +127,14 @@ BOOL plat_file_write(const char* path, const void* data, size_t size)
 void* plat_file_read_all(const char* path, size_t* outSize)
 {
     char norm[1024];
-    FILE* f = fopen(plat_normalize_path(path, norm, sizeof(norm)), "rb");
+    plat_normalize_path(path, norm, sizeof(norm));
+#ifdef RE1_AUTODOOR
+    { char t[300]; snprintf(t, sizeof(t), "  read %s", norm); port_room_trace(t); }
+#endif
+    void* cached = vita_asset_read_all(norm, outSize);
+    if (cached != NULL) return cached;
+
+    FILE* f = fopen(norm, "rb");
     if (f == NULL) return NULL;
     setvbuf(f, NULL, _IONBF, 0);    // one read, not 1 KB at a time (see LoadFile)
 
@@ -142,6 +151,7 @@ void* plat_file_read_all(const char* path, size_t* outSize)
     fclose(f);
     if (got != (size_t)fileSize) { free(buffer); return NULL; }
 
+    vita_asset_store(norm, buffer, (size_t)fileSize);
     if (outSize != NULL) *outSize = (size_t)fileSize;
     return buffer;
 }
@@ -281,5 +291,54 @@ unsigned char plat_pad_button_glyph(int bit)
     case 14: return 'S';  // Select
     case 15: return 38;   // Start, the font's right-pointing triangle
     default: return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Door transition trace (Globals.h port_room_trace). Lines are kept in memory
+// and written in one go once the room is playable, so the trace itself does
+// not add card writes to the transition it is timing.
+// ---------------------------------------------------------------------------
+
+DWORD g_vitaPresentCount = 0;
+
+static char  s_roomTrace[16384];
+static int   s_roomTraceLen = 0;
+static DWORD s_roomTraceStart = 0;
+static DWORD s_roomTraceFrame = 0;
+static BOOL  s_roomTraceOpen = FALSE;
+
+void port_room_trace(const char* stage);
+
+void port_room_trace(const char* stage)
+{
+    const BOOL begin = strcmp(stage, "door") == 0;
+    if (begin) {
+        s_roomTraceLen = 0;
+        s_roomTraceStart = plat_time_ms();
+        s_roomTraceFrame = g_vitaPresentCount;
+        s_roomTraceOpen = TRUE;
+    } else if (!s_roomTraceOpen) {
+        return;
+    }
+
+    const int room = (int)sizeof(s_roomTrace) - s_roomTraceLen;
+    if (room > 64) {
+        int n = snprintf(s_roomTrace + s_roomTraceLen, (size_t)room, "%6u ms %4u fr  %s\n",
+                         (unsigned)(plat_time_ms() - s_roomTraceStart),
+                         (unsigned)(g_vitaPresentCount - s_roomTraceFrame), stage);
+        if (n > 0 && n < room) s_roomTraceLen += n;
+    }
+
+    if (strcmp(stage, "playable") == 0) {
+        s_roomTraceOpen = FALSE;
+        static BOOL s_fresh = TRUE;     // one log per session
+        FILE* f = fopen(VITA_DATA_DIR "/room.log", s_fresh ? "w" : "a");
+        s_fresh = FALSE;
+        if (f != NULL) {
+            fwrite(s_roomTrace, 1, (size_t)s_roomTraceLen, f);
+            fputs("----\n", f);
+            fclose(f);
+        }
     }
 }

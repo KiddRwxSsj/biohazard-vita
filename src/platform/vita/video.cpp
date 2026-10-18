@@ -1067,3 +1067,95 @@ void plat_video_set_window_mode(BOOL forVideo)
 {
     if (forVideo) s_requestMs = plat_time_ms();
 }
+
+// ---------------------------------------------------------------------------
+// MP4 probe
+//
+// AvPlayer takes any MP4 it can parse and only finds out at decode time that
+// the stream is beyond the hardware, then ends without a picture: a movie pack
+// encoded as H.264 High 4:4:4 (the common "lossless-looking" export) made
+// every cutscene vanish. The avcC box says which profile and chroma format the
+// stream is, so look before handing it over. HEVC is out entirely.
+// ---------------------------------------------------------------------------
+
+static unsigned Be32(const unsigned char* p)
+{
+    return ((unsigned)p[0] << 24) | ((unsigned)p[1] << 16) | ((unsigned)p[2] << 8) | p[3];
+}
+
+// 1 = H.264 the hardware takes, 0 = something it does not, -1 = no answer.
+static int ProbeMp4(FILE* f)
+{
+    // Top-level boxes until moov; moov can sit at either end of the file.
+    long pos = 0;
+    unsigned char hdr[16];
+    for (int guard = 0; guard < 64; ++guard) {
+        if (fseek(f, pos, SEEK_SET) != 0 || fread(hdr, 1, 8, f) != 8) return -1;
+        unsigned long long size = Be32(hdr);
+        long hdrLen = 8;
+        if (size == 1) {
+            if (fread(hdr + 8, 1, 8, f) != 8) return -1;
+            size = ((unsigned long long)Be32(hdr + 8) << 32) | Be32(hdr + 12);
+            hdrLen = 16;
+        }
+        if (memcmp(hdr + 4, "moov", 4) == 0) {
+            const unsigned long long body = size ? size - hdrLen : 0;
+            if (body == 0 || body > 8u * 1024u * 1024u) return -1;
+            unsigned char* moov = (unsigned char*)malloc((size_t)body);
+            if (moov == NULL) return -1;
+            int verdict = -1;
+            if (fread(moov, 1, (size_t)body, f) == body) {
+                for (size_t i = 0; i + 12 <= body; ++i) {
+                    if (memcmp(moov + i, "hvc1", 4) == 0 || memcmp(moov + i, "hev1", 4) == 0) {
+                        verdict = 0;
+                        break;
+                    }
+                    if (memcmp(moov + i, "avcC", 4) == 0 && moov[i + 4] == 1) {
+                        const unsigned profile = moov[i + 5];
+                        // Baseline, Main, Extended, High. High 10/4:2:2/4:4:4
+                        // (110/122/244) and the rest need what the chip lacks.
+                        verdict = (profile == 66 || profile == 77 || profile == 88 ||
+                                   profile == 100) ? 1 : 0;
+                        break;
+                    }
+                }
+            }
+            free(moov);
+            return verdict;
+        }
+        if (size == 0) return -1;                   // box runs to the end
+        pos += (long)size;
+    }
+    return -1;
+}
+
+// Any other container goes to ffmpeg, which in this build has Cinepak, MPEG-4
+// part 2 and PCM but no H.264: TeamX's HD movies are H.264 in AVI. The AVI
+// header names the codec, so ask the demuxer only - no stream probing.
+static BOOL FfmpegCanDecode(const char* path)
+{
+    char url[300];
+    snprintf(url, sizeof(url), "file:%s", path);
+    AVFormatContext* fmt = NULL;
+    if (avformat_open_input(&fmt, url, NULL, NULL) < 0) return FALSE;
+    BOOL ok = TRUE;
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        const AVCodecParameters* par = fmt->streams[i]->codecpar;
+        if (par->codec_type == AVMEDIA_TYPE_VIDEO && avcodec_find_decoder(par->codec_id) == NULL) {
+            ok = FALSE;
+        }
+    }
+    avformat_close_input(&fmt);
+    return ok;
+}
+
+BOOL plat_video_can_play(const char* path)
+{
+    if (path == NULL) return FALSE;
+    if (!IsMp4(path)) return FfmpegCanDecode(path);
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return FALSE;
+    const int verdict = ProbeMp4(f);
+    fclose(f);
+    return verdict != 0 ? TRUE : FALSE;
+}

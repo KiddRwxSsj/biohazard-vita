@@ -118,6 +118,9 @@ const char*  GetAssetModeName(void);
 // through here, so any of them can be swapped.
 void         SetAssetMods(const char* list);
 int          GetAssetModCount(void);
+// The i-th mod's folder ("<base>/mods/<name>/", first-listed first) and name.
+const char*  GetAssetModRoot(int i);
+const char*  GetAssetModName(int i);
 
 // Rewrites whichever known asset-root form a path was compiled with (debug
 // ".\assets\USA\" or retail ".\usa\") to the current runtime root, writing the
@@ -126,6 +129,10 @@ int          GetAssetModCount(void);
 // rewrite is idempotent: the configured root never equals a recognized form, so
 // running the resolved path through again is a no-op.
 const char*  ResolveAssetRoot(const char* path, char* out, size_t outSize);
+// The same, as if no mods were loaded: for a mod file the platform turned
+// out to be unable to use (a movie it cannot decode), so the game's own file
+// is used instead of none.
+const char*  ResolveAssetRootNoMods(const char* path, char* out, size_t outSize);
 
 #ifdef __cplusplus
 }

@@ -8,6 +8,10 @@
 #include "../DebugPrint.h"
 #include "dc/ArrangeStages.h"   // room_file_stage()
 
+// Port: HD texture pack names, defined with load_room_bg below.
+static void PortBgName(int camera, char* out);
+static void PortMaskName(char* out);
+
 extern void SetSpriteBufferFlag(void);
 
 // ============================================================================
@@ -768,9 +772,47 @@ void load_room_masks(int param_1) // 0x00475a90
         // ROOM_MASK_TEXTURE_SLOT.
         TexturePage_SetupFull(g_TimImageBuffer__bitmap, g_TextureBankID,
                               g_TextureCurrentPage, ROOM_MASK_TEXTURE_SLOT);
+        {
+            // An arrange room's mask comes out of its RDT, not a named file.
+            char hd[12] = "";
+            if (room_file_stage() < STAGE_ARRANGE_FIRST) PortMaskName(hd);
+            port_hd_mask(hd, ROOM_MASK_TEXTURE_SLOT);
+        }
     } else {
+        port_hd_mask("", ROOM_MASK_TEXTURE_SLOT);
         TexturePage_DeleteSet(ROOM_MASK_TEXTURE_SLOT);
     }
+}
+
+// ============================================================================
+// Port: HD texture pack names (Globals.h port_hd_*). A background is named by
+// its file, rcSRRC, with the stage digit after load_room_bg's revisit fold -
+// which is what g_bgPathTemplate holds once a room's backgrounds are in.
+// ============================================================================
+char g_portBgName[12] = "";
+
+static void PortBgName(int camera, char* out)
+{
+    sprintf(out, "rc%c%c%c%c",
+            g_bgPathTemplate[GAME_DATA_PATH_IDX(0x0f)],
+            g_bgPathTemplate[GAME_DATA_PATH_IDX(0x10)],
+            g_bgPathTemplate[GAME_DATA_PATH_IDX(0x11)],
+            g_hexCharTable[camera & 0xf]);
+}
+
+// The mask sheet's name is the file g_maskPathTemplate currently names.
+static void PortMaskName(char* out)
+{
+    const char* base = g_maskPathTemplate;
+    for (const char* p = g_maskPathTemplate; *p != '\0'; ++p) {
+        if (*p == '\\' || *p == '/') base = p + 1;
+    }
+    int n = 0;
+    while (base[n] != '\0' && base[n] != '.' && n < 11) {
+        char c = base[n];
+        out[n++] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    out[n] = '\0';
 }
 
 // ============================================================================
@@ -834,6 +876,7 @@ void load_room_bg(void) // 0x00462b00
                     height = 236;
                 }
 
+                PortBgName(cameraIdx, g_portBgName);
                 display_image(cameraIdx, g_TimImageBuffer__bitmap, width, height);
                 title_setup_texture_pages(cameraIdx, 1);
                 cameraIdx++;
@@ -882,6 +925,11 @@ void load_room_bg(void) // 0x00462b00
                 g_bgCameraOffsets[camCounter] = totalSize;
                 int fileSize = (int)LoadFile(g_bgPathTemplate, &g_bgCacheBuffer[totalSize], 2);
                 totalSize += fileSize;
+                {
+                    char hd[12];
+                    PortBgName(camCounter - 1, hd);
+                    port_hd_prefetch(hd);
+                }
             } while (camCounter < (int)(unsigned int)g_RdtPointer->cameras_count);
         }
     }
@@ -934,6 +982,7 @@ void load_room_bg_image(void) // 0x004629c0
         height = 236;
     }
 
+    PortBgName(g_roomCameraId, g_portBgName);
     display_image(8, g_TimImageBuffer__bitmap, width, height);
     title_setup_texture_pages(8, 1);
     // empty_00470960(8): empty in the original - call dropped
@@ -977,6 +1026,11 @@ void load_room_bg_masks(void) // 0x004759d0
                 g_maskPathTemplate[GAME_DATA_PATH_IDX(0x14)] = (char)(camCounter + '0');
 
                 fileSize = (int)LoadFile(g_maskPathTemplate, &g_bgMaskDataBuffer[totalSize], 0x20);
+                {
+                    char hd[12];
+                    PortMaskName(hd);
+                    port_hd_prefetch(hd);
+                }
                 // LoadFile answers a miss with (size_t)-1. Added to totalSize
                 // that walks the write cursor BACKWARDS through the buffer and
                 // leaves later cameras with negative offsets, so the next room

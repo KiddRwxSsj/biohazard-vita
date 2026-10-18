@@ -30,10 +30,7 @@ unsigned int rd32(const unsigned char* p)
 
 int FileExists(const char* path)
 {
-    FILE* f = fopen(path, "rb");
-    if (f == NULL) return 0;
-    fclose(f);
-    return 1;
+    return plat_file_exists(path) ? 1 : 0;
 }
 
 int EndsWithWav(const char* path, size_t n)

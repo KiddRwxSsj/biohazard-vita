@@ -618,3 +618,9 @@ void plat_video_set_window_mode(BOOL forVideo)
 {
     (void)forVideo;   // SDL has no MCI overlay to accommodate
 }
+
+BOOL plat_video_can_play(const char* path)
+{
+    (void)path;
+    return TRUE;
+}

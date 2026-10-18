@@ -6710,6 +6710,8 @@ static void door_locked_message(unsigned int msgIndex)
 static void door_begin_transition(unsigned char* record)
 {
     g_pendingDoorRecord = (int)record;          // the room the transition will load
+    port_room_trace("door");
+    port_prefetch_door(record);
     g_main_state_flags |= MSF_GAMEPLAY_ACTIVE;
     g_message_flags = 0;
 

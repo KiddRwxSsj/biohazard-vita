@@ -26,7 +26,7 @@
 static int s_outRate = 22050;
 #define OUT_RATE     s_outRate
 #define MAX_BANKS    81
-#define GRAIN        512       // frames per sceAudioOutOutput, ~23 ms at 22050
+#define GRAIN        1024      // frames per sceAudioOutOutput, ~23 ms at 44100
 
 namespace {
 
@@ -159,20 +159,17 @@ void Mix(int16_t* dst, int frames)
                 else { bank.playing = false; bank.status = 0; break; }
             }
 
+            // Linear between neighbouring frames for every bank: the output is
+            // 44100 now, and the PC's 22050 banks and the 37800/44100 HQ audio
+            // mod banks all land between output samples.
             int32_t l, r;
-            if (bank.ps1) {
-                size_t j = i + 1;
-                if (j >= end) j = bank.loop ? (bank.loopEnd != 0 ? bank.loopBegin : 0) : i;
-                const float t = (float)(bank.pos - (double)i);
-                const int ch1 = bank.channels == 1 ? 0 : 1;
-                l = (int32_t)((1.0f - t) * ReadSample(bank, i, 0) + t * ReadSample(bank, j, 0));
-                r = (int32_t)((1.0f - t) * ReadSample(bank, i, ch1) + t * ReadSample(bank, j, ch1));
-            } else if (bank.channels == 1) {
-                l = r = ReadSample(bank, i, 0);
-            } else {
-                l = ReadSample(bank, i, 0);
-                r = ReadSample(bank, i, 1);
-            }
+            size_t j = i + 1;
+            if (j >= end) j = bank.loop ? (bank.loopEnd != 0 ? bank.loopBegin : 0) : i;
+            const float t = (float)(bank.pos - (double)i);
+            const int ch1 = bank.channels == 1 ? 0 : 1;
+            l = (int32_t)((1.0f - t) * ReadSample(bank, i, 0) + t * ReadSample(bank, j, 0));
+            r = (bank.channels == 1) ? l
+                : (int32_t)((1.0f - t) * ReadSample(bank, i, ch1) + t * ReadSample(bank, j, ch1));
 
             out[f * 2 + 0] += (int32_t)((float)l * amp * panL);
             out[f * 2 + 1] += (int32_t)((float)r * amp * panR);
@@ -404,7 +401,10 @@ void InitializeSoundSystem(void)
         s_lockReady = true;
     }
 
-    s_outRate = AudioFile_TreeHasPs1Audio() ? 44100 : 22050;
+    // Always 44100: HQ audio mods ship 44.1 kHz stereo banks, and mixing them
+    // down to 22050 made them sound like the originals. 22050 banks just
+    // repeat each sample.
+    s_outRate = 44100;
 
     s_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, GRAIN, OUT_RATE,
                                  SCE_AUDIO_OUT_MODE_STEREO);

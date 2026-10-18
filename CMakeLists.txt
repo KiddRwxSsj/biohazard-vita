@@ -146,6 +146,9 @@ if(VITA)
         src/platform/vita/stubs.cpp
         src/platform/vita/settings.cpp
         src/platform/vita/overlay.cpp
+        src/platform/vita/assetcache.cpp
+        src/platform/vita/hdpack.cpp
+        src/platform/vita/modmanager.cpp
         src/marni/MarniDX_Vita.cpp
     )
 
@@ -157,10 +160,10 @@ if(VITA)
     target_compile_options(residentevil PRIVATE -w -fsigned-char -fno-strict-aliasing)
 
     target_link_libraries(residentevil PRIVATE
-        avformat avcodec swresample avutil mp3lame mpg123
+        avformat avcodec swresample avutil mp3lame mpg123 webp png16 z
         vitaGL vitashark SceShaccCgExt taihen_stub SceShaccCg_stub mathneon
         SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub
-        SceCommonDialog_stub SceCtrl_stub SceAudio_stub ScePower_stub SceAvPlayer_stub SceTouch_stub
+        SceCommonDialog_stub SceAppUtil_stub SceCtrl_stub SceAudio_stub ScePower_stub SceAvPlayer_stub SceTouch_stub
         pthread m)
 
     # ATTRIBUTE2=12 asks the shell for the extended memory budget, which the
@@ -176,6 +179,8 @@ if(VITA)
             list(APPEND RE1_VPK_FILES "vita/sce_sys/${f}" "sce_sys/${f}")
         endif()
     endforeach()
+    # Which HD texture pack picture stands for which game file (hdpack.cpp).
+    list(APPEND RE1_VPK_FILES "vita/hd_map.txt" "hd_map.txt")
 
     vita_create_vpk(residentevil.vpk ${VITA_TITLEID} eboot.bin
         VERSION ${VITA_VERSION}

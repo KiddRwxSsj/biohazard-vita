@@ -379,11 +379,15 @@ void room_set(void)
 
     printf("sprite delete end\n");
 
+    port_room_trace("room_set: sprite delete end");
+
     // Delete objects (category 1)
     object_delete_00442170(1);
     Object_DeleteAll(1);
 
     printf("object delete end\n");
+
+    port_room_trace("room_set: object delete end");
 
     // 0x0047780d: Clear lower nibble of main state flags and input flags
     g_main_state_flags &= ~MSF_ROOM_RESET_MASK;
@@ -430,6 +434,8 @@ void room_set(void)
     lab_slides_reset();
 
     printf("etc set end\n");
+
+    port_room_trace("room_set: etc set end");
 
     // 0x00477904: Character model switching logic
     if (g_playerEntity.id != g_CharacterModelId) {
@@ -536,7 +542,9 @@ void room_set(void)
     object_delete_00442170(2);
 
     // 0x004779c7: LoadRoomRdt()
+    port_room_trace("room_set: player set");
     LoadRoomRdt();
+    port_room_trace("room_set: rdt loaded");
 
     // 0x004779d6: object_delete_00442170(3)
     object_delete_00442170(3);
@@ -552,6 +560,8 @@ void room_set(void)
 
     printf("after of Room load\n");
 
+    port_room_trace("room_set: after of Room load");
+
     // 0x00477a37: Setup collision boundaries and 3D sound callbacks
     Room_SetupCollisionCallbacks();
 
@@ -566,10 +576,14 @@ void room_set(void)
 
     printf("after of Sound rom set\n");
 
+    port_room_trace("room_set: after of Sound rom set");
+
     // 0x00477a92: InitRoomEffSprite()
     InitRoomEffSprite();
 
     printf("after of Init eff sprite\n");
+
+    port_room_trace("room_set: after of Init eff sprite");
 
     // 0x00477ac5: Sound bank loading loop
     i = 0;
@@ -609,6 +623,8 @@ void room_set(void)
 
     printf("after of model\n");
 
+    port_room_trace("room_set: after of model");
+
     // 0x00477c0f: run_command_functions(g_RoomInitScd)
     run_command_functions((unsigned short*)g_RoomInitScd);
 
@@ -616,6 +632,8 @@ void room_set(void)
     g_message_flags |= 0x80;
 
     printf("after of Scenario check\n");
+
+    port_room_trace("room_set: after of Scenario check");
 
     // 0x00477c45: room_events_check()
     room_events_check();
@@ -626,6 +644,8 @@ void room_set(void)
     object_delete_00442170(8);
 
     printf("after of Event\n");
+
+    port_room_trace("room_set: after of Event");
 
     object_delete_00442170(9);
 
@@ -675,6 +695,8 @@ void room_set(void)
 
     printf("after of model set\n");
 
+    port_room_trace("room_set: after of model set");
+
     // 0x00477e7c: Special case for lab visual data room (slide projector)
     if ((g_stageId == STAGE_LABORATORY) && (g_roomId == ROOM_VISUAL_DATA_ROOM)) {
         load_slides_images();
@@ -685,10 +707,13 @@ void room_set(void)
 
     printf("after of Bg room set\n");
 
+    port_room_trace("room_set: after of Bg room set");
+
     object_delete_00442170(0xb);
 
     // 0x00477ec8: load_room_bg_masks()
     load_room_bg_masks();
+    port_room_trace("room_set: masks loaded");
 
     object_delete_00442170(0xc);
 
@@ -713,6 +738,9 @@ void room_set(void)
     g_AttractModeIdleTimer = 0;
 
     printf("room_set end\n");
+    port_room_trace("room_set: end");
+    // Port: start reading the rooms behind this one's doors (DoorSystem.cpp).
+    port_prefetch_neighbours();
 }
 
 // ============================================================================

@@ -577,6 +577,10 @@ void OT_InsertPrimitive(void* prim, unsigned int depth)
     DWORD* p = (DWORD*)prim;
     if (p[0] != 1) return;
 
+    // Port: put a finished HD background / mask in place before anything of
+    // this frame samples them.
+    port_hd_poll();
+
     if (g_displayImageSRV == MARNI_NULL_HANDLE) return;
     // Menu-mode bit hides the room bg quad (the real menus draw their own
     // graphics). The F1 debug menu keeps the frozen game visible underneath,
@@ -1043,6 +1047,15 @@ void display_image(int slot, void* buffer, int width, int height)
 
     MarniCreateTexture(width, height, 32, rgba, &g_displayImageSRV);
     free(rgba);
+
+    // Port: an HD texture pack's picture of this background, when one is
+    // loaded (Globals.h port_hd_*). Swapped in by port_hd_poll once decoded.
+    if (width >= 316 && g_portBgName[0] != '\0') {
+        port_hd_background(g_portBgName);
+    } else {
+        port_hd_background("");
+    }
+    g_portBgName[0] = '\0';
 }
 
 // ============================================================================

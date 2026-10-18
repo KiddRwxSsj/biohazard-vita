@@ -3,6 +3,7 @@
 // Counterpart of src/platform/linux/main.cpp: read config.ini, bring up
 // vitaGL, start Marni, then drive main_loop() at the engine's 33 ms tick with
 // the same limiter (see src/platform/win32/main.cpp:706-757 for the original).
+#include <psp2/appmgr.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/power.h>
@@ -44,7 +45,7 @@ BOOL vita_gl_ready(void)
     return s_glReady;
 }
 
-int main(int, char**)
+int main(int argc, char** argv)
 {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -84,6 +85,19 @@ int main(int, char**)
                                msaa);
     s_glReady = TRUE;
 
+    // The mod manager, before anything reads the asset tree it may change.
+    if (vita_mod_manager_requested(argc, argv)) {
+        const int bootMsaa = g_vitaVideo.msaa;
+        vita_mod_manager_run();
+        // MSAA is a vitaGL init parameter: start over with the new one.
+        if (g_vitaVideo.msaa != bootMsaa) {
+            sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
+        }
+        ConfigFile_Load();
+        vita_load_video_settings();
+        vita_asset_cache_reset();
+    }
+
     // The panel is fixed; whatever [Display] says is for the PC builds.
     int boxW = 0, boxH = 0;
     vita_game_box(NULL, NULL, &boxW, &boxH);
@@ -93,6 +107,9 @@ int main(int, char**)
     vglWaitVblankStart((g_vitaVideo.vsync || g_vitaVideo.fps60) ? GL_TRUE : GL_FALSE);
 
     g_hWnd = &s_display;
+
+    // Needs the [Mods] list ConfigFile_Load set up.
+    vita_hd_init();
 
     StartSoundSystemAsync(g_hWnd);
 

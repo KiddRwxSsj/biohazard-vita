@@ -39,6 +39,20 @@ size_t LoadFile(const char* path, void* buffer, unsigned char flags)
     // title flow. The flag is therefore accepted and ignored here.
     (void)flags;
 
+#if defined(__vita__)
+    // Port: through the Vita's asset cache (platform/vita/assetcache.cpp) -
+    // a cached file is a memcpy, a missing one is answered from the folder
+    // listing without touching the card.
+    {
+        extern size_t vita_asset_load(const char* path, void* buffer);
+        const size_t n = vita_asset_load(filePath, buffer);
+#ifdef RE1_AUTODOOR
+        { char t[300]; snprintf(t, sizeof(t), "  load %s %d", filePath, (int)n); port_room_trace(t); }
+#endif
+        return n;
+    }
+#endif
+
     int retryCount = 0;
     BOOL showError = FALSE;
 

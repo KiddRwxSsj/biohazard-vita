@@ -16,7 +16,7 @@
 #include <string.h>
 #include <strings.h>
 
-VitaVideoSettings g_vitaVideo = { VITA_ASPECT_4_3, FALSE, TRUE, 1.0f, 0, FALSE };
+VitaVideoSettings g_vitaVideo = { VITA_ASPECT_4_3, FALSE, TRUE, 1.0f, 0, TRUE, TRUE, 720 };
 BOOL g_vitaVideoDirty = FALSE;
 VitaGameplaySettings g_vitaGameplay = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE };
 
@@ -80,10 +80,15 @@ static const char kVitaSection[] =
     "Gamma=1.0\n"
     "; Antialiasing (MSAA): 0 (default), 2 or 4. 4 costs GPU time and memory.\n"
     "MSAA=0\n"
-    "; FrameRate: 30 (default, as shipped) or 60. The game still runs 30 ticks a\n"
+    "; FrameRate: 60 (default) or 30 (as shipped). The game still runs 30 ticks a\n"
     "; second; 60 adds a frame between ticks with the 3D models halfway along.\n"
     "; Forces VSync on while it is set.\n"
-    "FrameRate=30\n"
+    "FrameRate=60\n"
+    "; HdTextures: 1 = use the hires/ folder of a texture pack mod (TeamX HD,\n"
+    "; Seamless HD). HdMaxHeight: the size HD pictures are scaled down to,\n"
+    "; 480, 720 (default) or 960 lines. Bigger looks sharper and uses more memory.\n"
+    "HdTextures=1\n"
+    "HdMaxHeight=720\n"
     "; Gameplay extras, 1 = on. AutoRun: push forward to run, hold run to walk.\n"
     "; WeaponSwitch: flick the right stick to change weapon. SkipDoors: cut the\n"
     "; door animation out entirely. HealthHud: the status screen's portrait and\n"
@@ -152,7 +157,13 @@ void vita_load_video_settings(void)
 
     int msaa = ConfigFile_ReadInt("Vita", "MSAA", 0);
     g_vitaVideo.msaa = (msaa >= 4) ? 4 : (msaa >= 2) ? 2 : 0;
-    g_vitaVideo.fps60 = ConfigFile_ReadInt("Vita", "FrameRate", 30) >= 60 ? TRUE : FALSE;
+    g_vitaVideo.fps60 = ConfigFile_ReadInt("Vita", "FrameRate", 60) >= 60 ? TRUE : FALSE;
+    g_vitaVideo.hdTextures = ConfigFile_ReadInt("Vita", "HdTextures", 1) ? TRUE : FALSE;
+    {
+        // Snapped to the three sizes the mod manager offers.
+        const int h = ConfigFile_ReadInt("Vita", "HdMaxHeight", 720);
+        g_vitaVideo.hdMaxHeight = h >= 960 ? 960 : h >= 720 ? 720 : 480;
+    }
     g_portFrameInterp = g_vitaVideo.fps60 ? 1 : 0;
 
     g_vitaGameplay.autoRun      = ConfigFile_ReadInt("Vita", "AutoRun", 0) ? TRUE : FALSE;
@@ -181,16 +192,97 @@ void vita_apply_gameplay_settings(void)
     g_portHudAutoHide = g_vitaGameplay.hudAutoHide ? 1 : 0;
 }
 
-// Write g_vitaVideo back into the [Vita] section, in place. Every other line,
+// Write `count` keys into `section` of config.ini, in place. Every other line,
 // comments included, is copied through untouched; keys the section lacks are
 // added at its end, and a missing section is appended whole.
+void vita_config_write(const char* section, const char* const* keys,
+                       const char* const* values, int count)
+{
+    const char* path = ConfigFile_Find();
+    FILE* in = fopen(path, "r");
+    if (in == NULL) return;
+
+    fseek(in, 0, SEEK_END);
+    long size = ftell(in);
+    rewind(in);
+    char* text = (char*)malloc((size_t)size + 1);
+    if (text == NULL) { fclose(in); return; }
+    size = (long)fread(text, 1, (size_t)size, in);
+    text[size] = '\0';
+    fclose(in);
+
+    FILE* out = fopen(path, "w");
+    if (out == NULL) { free(text); return; }
+
+    char header[48];
+    snprintf(header, sizeof(header), "[%s]", section);
+    const size_t headerLen = strlen(header);
+
+    BOOL inSection = FALSE, sawSection = FALSE;
+    BOOL written[32] = {};
+    if (count > 32) count = 32;
+
+    auto emitMissing = [&]() {
+        for (int k = 0; k < count; ++k) {
+            if (!written[k]) fprintf(out, "%s=%s\n", keys[k], values[k]);
+            written[k] = TRUE;
+        }
+    };
+
+    char* line = text;
+    while (line != NULL) {
+        char* next = strchr(line, '\n');
+        if (next != NULL) *next++ = '\0';
+        else if (*line == '\0') break;   // nothing after the final newline
+
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+
+        if (*p == '[') {
+            if (inSection) emitMissing();
+            inSection = (strncasecmp(p, header, headerLen) == 0) ? TRUE : FALSE;
+            if (inSection) sawSection = TRUE;
+            fprintf(out, "%s\n", line);
+        } else {
+            int key = -1;
+            if (inSection) {
+                for (int k = 0; k < count && key < 0; ++k) {
+                    const size_t n = strlen(keys[k]);
+                    const char* q = p + n;
+                    while (*q == ' ' || *q == '\t') ++q;
+                    if (strncasecmp(p, keys[k], n) == 0 && *q == '=') key = k;
+                }
+            }
+            if (key < 0) {
+                fprintf(out, "%s\n", line);
+            } else if (!written[key]) {
+                // A duplicate later in the section is dropped, so the value
+                // the reader picks up is always this one.
+                fprintf(out, "%s=%s\n", keys[key], values[key]);
+                written[key] = TRUE;
+            }
+        }
+        line = next;
+    }
+
+    if (inSection) emitMissing();
+    if (!sawSection) {
+        fprintf(out, "\n%s\n", header);
+        emitMissing();
+    }
+
+    fclose(out);
+    free(text);
+}
+
+// Write g_vitaVideo and g_vitaGameplay back into the [Vita] section.
 void vita_save_video_settings(void)
 {
     static const char* const kAspect[3] = { "4:3", "Integer", "Stretch" };
     static const char* const kKeys[] = {
         "Aspect", "Filter", "VSync", "Gamma", "MSAA",
         "AutoRun", "WeaponSwitch", "SkipDoors", "HealthHud", "AmmoHud",
-        "HudStatus", "HudWeapon", "FrameRate", "HudAutoHide",
+        "HudStatus", "HudWeapon", "FrameRate", "HudAutoHide", "HdTextures", "HdMaxHeight",
     };
     const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
     char values[sizeof(kKeys) / sizeof(kKeys[0])][16];
@@ -210,77 +302,12 @@ void vita_save_video_settings(void)
     }
     snprintf(values[12], sizeof(values[12]), "%d", g_vitaVideo.fps60 ? 60 : 30);
     snprintf(values[13], sizeof(values[13]), "%d", g_vitaGameplay.hudAutoHide ? 1 : 0);
+    snprintf(values[14], sizeof(values[14]), "%d", g_vitaVideo.hdTextures ? 1 : 0);
+    snprintf(values[15], sizeof(values[15]), "%d", g_vitaVideo.hdMaxHeight);
 
-    const char* path = ConfigFile_Find();
-    FILE* in = fopen(path, "r");
-    if (in == NULL) return;
-
-    fseek(in, 0, SEEK_END);
-    long size = ftell(in);
-    rewind(in);
-    char* text = (char*)malloc((size_t)size + 1);
-    if (text == NULL) { fclose(in); return; }
-    size = (long)fread(text, 1, (size_t)size, in);
-    text[size] = '\0';
-    fclose(in);
-
-    FILE* out = fopen(path, "w");
-    if (out == NULL) { free(text); return; }
-
-    BOOL inVita = FALSE, sawVita = FALSE;
-    BOOL written[sizeof(kKeys) / sizeof(kKeys[0])] = {};
-
-    auto emitMissing = [&]() {
-        for (int k = 0; k < kKeyCount; ++k) {
-            if (!written[k]) fprintf(out, "%s=%s\n", kKeys[k], values[k]);
-            written[k] = TRUE;
-        }
-    };
-
-    char* line = text;
-    while (line != NULL) {
-        char* next = strchr(line, '\n');
-        if (next != NULL) *next++ = '\0';
-        else if (*line == '\0') break;   // nothing after the final newline
-
-        const char* p = line;
-        while (*p == ' ' || *p == '\t') ++p;
-
-        if (*p == '[') {
-            if (inVita) emitMissing();
-            inVita = (strncasecmp(p, "[Vita]", 6) == 0) ? TRUE : FALSE;
-            if (inVita) sawVita = TRUE;
-            fprintf(out, "%s\n", line);
-        } else {
-            int key = -1;
-            if (inVita) {
-                for (int k = 0; k < kKeyCount && key < 0; ++k) {
-                    const size_t n = strlen(kKeys[k]);
-                    const char* q = p + n;
-                    while (*q == ' ' || *q == '\t') ++q;
-                    if (strncasecmp(p, kKeys[k], n) == 0 && *q == '=') key = k;
-                }
-            }
-            if (key < 0) {
-                fprintf(out, "%s\n", line);
-            } else if (!written[key]) {
-                // A duplicate later in the section is dropped, so the value
-                // the reader picks up is always this one.
-                fprintf(out, "%s=%s\n", kKeys[key], values[key]);
-                written[key] = TRUE;
-            }
-        }
-        line = next;
-    }
-
-    if (inVita) emitMissing();
-    if (!sawVita) {
-        fputs("\n[Vita]\n", out);
-        emitMissing();
-    }
-
-    fclose(out);
-    free(text);
+    const char* valuePtrs[sizeof(kKeys) / sizeof(kKeys[0])];
+    for (int k = 0; k < kKeyCount; ++k) valuePtrs[k] = values[k];
+    vita_config_write("Vita", kKeys, valuePtrs, kKeyCount);
 }
 
 void vita_game_box(int* x, int* y, int* w, int* h)

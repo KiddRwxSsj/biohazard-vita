@@ -64,6 +64,10 @@ BOOL plat_path_is_absolute(const char* path);
 // NULL security descriptor. Returns TRUE if the directory exists afterwards.
 BOOL plat_mkdir(const char* path);
 
+// TRUE when a file exists. The Vita answers asset paths from a cached listing
+// of the folder, so probing for a file that is not there is free.
+BOOL plat_file_exists(const char* path);
+
 // Write a buffer to a file, creating or truncating it. Returns TRUE on success.
 // Replaces the CreateFileA/WriteFile pair in MarniBits::SaveBitmapToFile.
 BOOL plat_file_write(const char* path, const void* data, size_t size);
@@ -161,6 +165,12 @@ void plat_video_set_overlay_callback(PlatVideoOverlayCallback callback);
 
 // Probe the decoder backend. FALSE means "no FMV available, skip the movie".
 BOOL plat_video_init(void);
+
+// FALSE when this backend knows it cannot decode `path` (the Vita's hardware
+// H.264 decoder takes Baseline/Main/High 4:2:0 only), so the caller can fall
+// back to the original .avi instead of playing a movie that never shows a
+// picture. TRUE when it can, or cannot tell.
+BOOL plat_video_can_play(const char* path);
 
 // Open `path` and start playing. playToMs > 0 stops at that time (the
 // prologue's Chris-only beat); 0 plays through to the end.
