@@ -34,10 +34,10 @@ files and the Japanese ones alike.
 
 | Mod | Works | How to install |
 |---|---|---|
-| **Seamless HD Project 1.1** (MoArtis, Kayael, Doze_D, FrankWesker) | Backgrounds and masks: yes (972 of its 1103 images match a room camera; tested in Vita3K). Movies: 1280x946, untested at that size on hardware; run them through `convert_movies` to get 720-line copies. The room files in `Mod_SHDP/STAGE*` are plain `.rdt` replacements and should load, untested. Character, item and UI textures (`skin`, `skin2`, `misc`) and the `TEXT/*.xml` patches: no. | Copy `hires/` (and `bio1dc/` for DC mode) to `mods/SHDP/`. Optionally `Mod_SHDP/STAGE2` and `STAGE7` to `mods/SHDP/stage2` and `stage7`, and the `convert_movies` output of the pack (see [Movie packs](#movie-packs)). |
-| **Resident Evil HD mod** (TeamX, 2022-08-31) | Backgrounds and masks: yes (same names as SHDP, 972 matched). `jpn/movie/*.avi` (H.264 inside AVI): needs `convert_movies`. `skin`, `skin2`, `misc`: no. | Copy `hires/` to `mods/TeamX_HD/`. The `.asi`/`.dll` files are for the PC and aren't needed. |
+| **Seamless HD Project 1.1** (MoArtis, Kayael, Doze_D, FrankWesker) | Backgrounds and masks: yes (972 of its 1103 images match a room camera; tested in Vita3K). Movies: 1280x946 H.264 4:2:0, which the port plays as they are (that size is untested on hardware). The room files in `Mod_SHDP/STAGE*` are plain `.rdt` replacements and should load, untested. Character, item and UI textures (`skin`, `skin2`, `misc`) and the `TEXT/*.xml` patches: no. | Copy `hires/` (and `bio1dc/` for DC mode) to `mods/SHDP/`, optionally `movie/` too, and `Mod_SHDP/STAGE2` and `STAGE7` to `mods/SHDP/stage2` and `stage7`. Then [OPTIMIZE](#optimize-for-vita) it. |
+| **Resident Evil HD mod** (TeamX, 2022-08-31) | Backgrounds and masks: yes (same names as SHDP, 972 matched). `jpn/movie/*.avi` (H.264 inside AVI): OPTIMIZE re-packs them into MP4 in seconds. `skin`, `skin2`, `misc`: no. | Copy the whole folder to `mods/TeamX_HD/` and OPTIMIZE it; that also deletes the PC-only `.asi`/`.dll` files. |
 | **RE1 PC HQ Audio Mod** | Yes, all 602 music, sound and voice files (tested in Vita3K). | Copy the folder as it is (it ships as `JPN/Sound`, `JPN/Voice`) to `mods/HQ_Audio/`, or put `sound/` and `voice/` straight in it. |
-| **PS1 movie packs** (`.mp4` sets of the FMVs) | Yes if they are 4:2:0. Packs exported as High 4:4:4 are listed as INACTIVE in the manager until converted. | `mods/<name>/movie/*.mp4`, through `convert_movies` first. |
+| **PS1 movie packs** (`.mp4` sets of the FMVs) | Yes if they are 4:2:0. Packs exported as High 4:4:4 are listed as INACTIVE in the manager until converted. | `mods/<name>/movie/*.mp4`, then OPTIMIZE (re-encodes 4:4:4 ones on the console, slowly). |
 | **REuncap** | Not needed: the port has its own 60 FPS mode built on the same idea (`[Vita] FrameRate=60`, FRAME RATE in the settings). | Nothing to install. |
 | **Classic REbirth** | Not needed and not loadable: it patches the PC executable, and this port already is a rebuilt executable. | Nothing to install. |
 
@@ -61,17 +61,45 @@ It opens before the game starts, three ways:
 Pages, flipped with L and R:
 
 * **MODS:** every folder in `mods/`, what it carries and whether it's doing anything. X turns a
-  mod on or off, Square and Triangle move it up and down the load order. A mod that does nothing
-  for the selected game version (a JPN-only folder while playing USA, a movie pack the Vita can't
-  decode) says so in red.
+  mod on or off, Square and Triangle move it up and down the load order, SELECT optimizes it (see
+  below). A mod that does nothing for the selected game version (a JPN-only folder while playing
+  USA, a movie pack the Vita can't decode) says so in red.
 * **GAME:** game version (USA, or JPN when `JPN/` is there) and content (original or Director's
   Cut when `DC/` is there).
-* **VIDEO:** aspect, filter, gamma, antialiasing, frame rate, HD textures on/off, HD texture size
-  and HD preload.
+* **VIDEO:** aspect, filter, gamma, antialiasing, frame rate, HD textures on/off and HD texture
+  size.
 * **GAMEPLAY:** auto run, weapon swap, skip doors, status HUD, weapon HUD, HUD auto hide.
 
 START saves everything to `config.ini` and starts the game. Changing antialiasing restarts the app,
 since it can only be set at boot.
+
+## Optimize for Vita
+
+SELECT on a mod in the MODS page converts it, on the console, into the form the Vita loads
+fastest. It is **destructive**: the mod's own files are overwritten and can't be brought back, so
+keep the download on a PC if you may want them. The mod manager first lists exactly what it will
+do and shows the warning; hold X for three seconds to start, CIRCLE to cancel.
+
+| Part | What happens |
+|---|---|
+| HD backgrounds (`hires/bgd/*.webp`) | Decoded, scaled to HD TEXTURE SIZE, saved as `HASH.jpg` (JPEG quality 92). The `.webp` is deleted. |
+| HD masks (`hires/mask/*.webp`) | Same, saved as `HASH.rhd` (zlib'd RGBA: masks need their transparency). |
+| `bio1dc/` | Converted like `hires/` when a `DC/` folder is installed, deleted when it isn't. |
+| Movies the Vita can play | Left alone. |
+| H.264 4:2:0 in AVI/MKV (TeamX's Japanese movies) | Video copied into an `.mp4` unchanged (its display order rebuilt from the H.264 headers), audio re-encoded to AAC. Seconds per movie. |
+| H.264 4:4:4 / 10-bit, or other codecs | Decoded in software and re-encoded to MPEG-4 + MP3 in an `.avi`, at most 640x480 so it plays in real time. Slow: not measured on hardware yet, likely several times the movie's length. Needs a build with FFmpeg's H.264 decoder (the release has it). |
+| HEVC | Can't be decoded on the Vita; left alone and listed. |
+| `hires/skin`, `skin2`, `misc`, `.dll`, `.asi` | Deleted: the port never reads them. |
+
+Pictures are converted on two cores, up to three movies at once, and the CPU is clocked to
+444 MHz while it runs. Each file is replaced only when its new version is complete, so CIRCLE (or
+a crash, or the battery) leaves a mod that still works; running OPTIMIZE again does the rest. When
+everything is done it writes `vita_optimized.txt` in the mod, and the manager shows the mod as
+"optimized for Vita".
+
+In testing, Seamless HD's backgrounds and masks went from 334 MB of WebP to about 205 MB. The
+pictures are fixed at the HD TEXTURE SIZE they were made with; to change it later you need the
+original pack again.
 
 ## HD packs
 
@@ -80,17 +108,12 @@ the Vita doesn't have. `vita/hd_map.txt` (shipped inside the VPK) maps each room
 name instead: 591 backgrounds and 403 mask sheets. It was built by `tools/vita/hd_map.py`, by
 matching pictures against the GOG release and reading the pack's `hires/cache/ROOM*.dat` order.
 
-* Pictures are decoded on a background thread when you enter a room. Without HD preload, a camera
-  cut can show the original background for the frames the HD one is still decoding.
-* **HD PRELOAD** / `[Vita] HdPreload=1` stops that. When you press START in the mod manager (and
-  on any later start while something is missing), every picture of the active packs is decoded once
-  into `ux0:data/RE1/hdcache/<size>/`, already scaled, with a progress bar. CIRCLE stops it and
-  starts the game; the rest is done next time. In game a picture is then a quick read instead of a
-  WebP decode, and the game waits for it instead of showing the original first. For Seamless HD at
-  720 lines it takes about 800 MB and a few minutes. Changing HD TEXTURE SIZE builds a new cache
-  and deletes the old one; deleting `hdcache/` by hand is always safe.
+* Pictures are decoded on a background thread when you enter a room. From an optimized mod they
+  load in a few frames and the game waits for them, so the original background never shows
+  first. From a plain pack the WebP decode can take half a second, so a camera cut can show the
+  original background for a moment before the HD one appears.
 * `HD TEXTURE SIZE` / `[Vita] HdMaxHeight` (480, 720 or 960) is the height pictures are scaled
-  down to when decoded. 720 is the default; 960 is sharper and slower to load.
+  down to when decoded or optimized. 720 is the default; 960 is sharper and slower to load.
 * Pictures larger than 4096 px on a side are skipped, so an 8K pack won't run the Vita out of
   memory.
 * `HD TEXTURES` / `[Vita] HdTextures=0` turns the packs off without removing them.
@@ -102,11 +125,12 @@ Model, item and menu textures (`skin`, `skin2`, `misc`) aren't mapped yet.
 The Vita plays `.mp4` movies with its hardware decoder, which only takes H.264 4:2:0 (Baseline,
 Main or High), and `.avi` movies with a small decoder that has Cinepak and MPEG-4 but no H.264.
 Packs exported as High 4:4:4, 10-bit or HEVC, or H.264 inside AVI, are skipped (the manager says
-how many) and the original movie plays instead. Movies taller than 720 lines are played, but
-1280x960 decoding plus the colour conversion is a lot for the Vita and isn't tested on hardware,
-so the converter scales them down too. The Vita can't re-encode
-video itself, so this is done once on a PC.
+how many) and the original movie plays instead. [OPTIMIZE](#optimize-for-vita) converts them on the
+console.
 
+### Converting on a PC instead
+
+Re-encoding a whole 4:4:4 pack on the Vita takes a long time. A PC does the same job in minutes.
 `tools/vita/convert_movies.py` does it automatically. Point it at a downloaded pack, a mod folder,
 or a whole `mods` folder:
 

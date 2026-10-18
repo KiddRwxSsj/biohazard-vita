@@ -111,6 +111,26 @@ settings panel.
 
 START saves it all to `config.ini` and starts the game.
 
+### Optimize for Vita
+
+Press **SELECT** on a mod to optimize it on the console, no PC needed. The mod manager first shows
+what it will do and a warning: it **overwrites the mod's own files and can't be undone**, and a big
+pack with movies can take an hour or more. Hold X for three seconds to start.
+
+* HD backgrounds become JPEGs and masks a compact format, already scaled to HD TEXTURE SIZE. They
+  load several times faster than the WebP originals, so the game waits for the HD picture instead
+  of showing the original background first: no more pop-in. The originals are deleted as each one
+  is converted, so the mod doesn't take extra space (Seamless HD's pictures went from 334 MB to
+  about 200 MB in testing).
+* Movies the Vita can't play are converted: H.264 inside AVI (TeamX) is re-packed into MP4 in
+  seconds, and High 4:4:4 packs are re-encoded to MPEG-4 at 640x480, which is slow.
+* Files the port never uses are deleted: `hires/skin`, `skin2`, `misc`, `.dll` and `.asi` files,
+  and `bio1dc/` when no `DC/` folder is installed.
+
+CIRCLE stops it; whatever is done stays converted and running OPTIMIZE again finishes the rest.
+Because the size is fixed when you optimize, keep a copy of the pack on a PC if you may want a
+different HD TEXTURE SIZE later.
+
 ## Mods
 
 A mod is a folder in `ux0:data/RE1/mods/` holding a copy of the parts of the game tree it changes,
@@ -130,7 +150,7 @@ The full list of tested mods and how to install each one is in [docs/MODS.md](do
 ### HD packs
 
 <p align="center">
-  <img src="screenshots/hdpack.png" alt="Seamless HD Project" width="700"/>
+  <img src="screenshots/hdpack.png" alt="HD backgrounds" width="700"/>
 </p>
 
 The Classic REbirth background packs, the **Seamless HD Project** and **TeamX's HD mod**, work:
@@ -138,25 +158,23 @@ copy the pack's `hires/` folder into a mod folder (`mods/SHDP/hires/bgd`, `mods/
 Backgrounds and the masks over them are swapped in for 591 room cameras, scaled to `HdMaxHeight`
 (480, 720 or 960, 720 by default). The packs' character and item textures aren't supported yet.
 
-Turn on **HD PRELOAD** in the mod manager so backgrounds never pop in: the first START after a
-pack is added prepares every picture once (a few minutes, about 800 MB for Seamless HD at 720),
-and from then on each camera's HD background is there the moment it appears. Without it, pictures
-are decoded as you play and a camera cut can show the original background for a moment.
+A pack works as you copy it, but its WebP pictures are slow to decode on the Vita and a camera cut
+can show the original background for a moment. [Optimize](#optimize-for-vita) the mod once to fix
+that.
 
 ### Movies
 
 Movies can be `.mp4` (H.264 with AAC audio): `mods/Movies/movie/capcom.mp4`. The Vita's decoder
-only plays 4:2:0 H.264, so many packs (High 4:4:4, H.264 inside AVI) need converting once on a
-PC, and big 1280x960 ones are better scaled to 720; the mod manager tells you when a pack has movies it can't play.
-[`tools/vita/convert_movies.py`](tools/vita/convert_movies.py) does it automatically: give it the
-downloaded pack (or drag the folder onto `convert_movies.bat` on Windows) and it re-encodes only
-the movies that need it and writes a ready mod folder to copy into `mods/`.
+only plays 4:2:0 H.264, so many packs (High 4:4:4, H.264 inside AVI) don't play as they come; the
+mod manager says when a pack has movies it can't play, and [OPTIMIZE](#optimize-for-vita) converts
+them on the console.
 
-```bash
-python3 tools/vita/convert_movies.py path/to/pack
-```
+If you'd rather do it on a PC (much faster for big packs),
+[`tools/vita/convert_movies.py`](tools/vita/convert_movies.py) does the same conversion with
+`ffmpeg` and writes a ready mod folder: `python3 tools/vita/convert_movies.py path/to/pack`, or drag
+the folder onto `convert_movies.bat` on Windows.
 
-It needs `ffmpeg`. Download links for every tested mod are in [docs/MODS.md](docs/MODS.md).
+Download links for every tested mod are in [docs/MODS.md](docs/MODS.md).
 
 ## AI Assistance
 
@@ -177,12 +195,21 @@ implementation and debugging process remaining under human supervision.
 
 ## Building from source
 
-You need [VitaSDK](https://vitasdk.org) with vitaGL, vitaShaRK and the ffmpeg package installed
-through vdpm, and `VITASDK` set:
+You need [VitaSDK](https://vitasdk.org) with vitaGL, vitaShaRK, and the ffmpeg, libwebp,
+libjpeg-turbo and libpng packages installed through vdpm, and `VITASDK` set:
 
 ```bash
 cmake -S . -B build/vita -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build/vita -j
+```
+
+For the mod manager's movie conversion of 4:4:4 packs, build FFmpeg with its H.264 decoder (the
+vdpm package has none) and point CMake at it. Without it everything else works and those packs
+are reported as not convertible.
+
+```bash
+tools/vita/build_ffmpeg.sh ../ffmpeg-vita
+cmake -S . -B build/vita -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DRE1_FFMPEG_PREFIX=../ffmpeg-vita
 ```
 
 The VPK ends up as `build/vita/residentevil.vpk`. The LiveArea art and template (with the mod
