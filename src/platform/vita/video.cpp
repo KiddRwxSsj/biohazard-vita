@@ -33,6 +33,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 }
 
 #include <psp2/avplayer.h>
@@ -106,6 +107,9 @@ int              s_vstream = -1;
 int              s_astream = -1;
 AVPacket*        s_pkt     = NULL;
 AVFrame*         s_frame   = NULL;
+AVFrame*         s_shown   = NULL;   // newest decoded picture, converted on demand
+bool             s_shownFresh = false;
+SwsContext*      s_sws     = NULL;
 
 double s_fps    = 10.0;
 int    s_width  = 0;
@@ -157,6 +161,9 @@ void FreeAll(void)
 
     if (s_swr)    { swr_free(&s_swr); }
     if (s_frame)  { av_frame_free(&s_frame); }
+    if (s_shown)  { av_frame_free(&s_shown); }
+    s_shownFresh = false;
+    if (s_sws)    { sws_freeContext(s_sws); s_sws = NULL; }
     if (s_aframe) { av_frame_free(&s_aframe); }
     if (s_pkt)    { av_packet_free(&s_pkt); }
     if (s_vctx)   { avcodec_free_context(&s_vctx); }
@@ -278,12 +285,13 @@ void DecodeAudioPacket(AVPacket* pkt)
 // ---------------------------------------------------------------------------
 // ConvertAndStore - pack the decoder's frame into the RGBA buffer.
 //
-// The game's movies are all Cinepak, whose decoder emits packed RGB; the
-// conversion is a per-pixel shuffle, so swscale (and its i386 package) is not
-// needed. Anything unexpected is reported once and skipped.
+// Cinepak (the game's own movies) decodes to packed RGB, a per-pixel shuffle;
+// YUV420P (MPEG-4 / H.264 mod movies) goes through swscale's NEON path.
+// Anything unexpected is reported once and skipped.
 // ---------------------------------------------------------------------------
 BOOL ConvertAndStore(void)
 {
+    AVFrame* frame = s_shown;
     if (s_width <= 0 || s_height <= 0) return FALSE;
 
     if (s_rgba == NULL) {
@@ -292,11 +300,11 @@ BOOL ConvertAndStore(void)
         if (s_rgba == NULL) return FALSE;
     }
 
-    const int srcStride = s_frame->linesize[0];
-    const unsigned char* src = s_frame->data[0];
+    const int srcStride = frame->linesize[0];
+    const unsigned char* src = frame->data[0];
     unsigned char* dst = s_rgba;
 
-    switch (s_frame->format) {
+    switch (frame->format) {
     case AV_PIX_FMT_RGB24:
         for (int y = 0; y < s_height; ++y) {
             const unsigned char* s = src + (size_t)y * srcStride;
@@ -334,13 +342,26 @@ BOOL ConvertAndStore(void)
         }
         return TRUE;
     case AV_PIX_FMT_YUV420P:
+        // swscale has a NEON path for exactly this (even height, width a
+        // multiple of 16, no accurate rounding); the C loop below is ~3x slower.
+        if ((s_width & 15) == 0 && (s_height & 1) == 0) {
+            s_sws = sws_getCachedContext(s_sws, s_width, s_height, AV_PIX_FMT_YUV420P,
+                                         s_width, s_height, AV_PIX_FMT_RGBA,
+                                         SWS_POINT, NULL, NULL, NULL);
+            if (s_sws != NULL) {
+                int dstStride[1] = { s_rgbaPitch };
+                uint8_t* dstPlane[1] = { dst };
+                sws_scale(s_sws, frame->data, frame->linesize, 0, s_height, dstPlane, dstStride);
+                return TRUE;
+            }
+        }
         {
-            const unsigned char* yp = s_frame->data[0];
-            const unsigned char* up = s_frame->data[1];
-            const unsigned char* vp = s_frame->data[2];
-            const int yStride = s_frame->linesize[0];
-            const int uStride = s_frame->linesize[1];
-            const int vStride = s_frame->linesize[2];
+            const unsigned char* yp = frame->data[0];
+            const unsigned char* up = frame->data[1];
+            const unsigned char* vp = frame->data[2];
+            const int yStride = frame->linesize[0];
+            const int uStride = frame->linesize[1];
+            const int vStride = frame->linesize[2];
             for (int y = 0; y < s_height; ++y) {
                 const unsigned char* yRow = yp + (size_t)y * yStride;
                 const unsigned char* uRow = up + (size_t)(y / 2) * uStride;
@@ -363,7 +384,7 @@ BOOL ConvertAndStore(void)
         }
         return TRUE;
     default:
-        Trace("unsupported pixel format %d", s_frame->format);
+        Trace("unsupported pixel format %d", frame->format);
         return FALSE;
     }
 }
@@ -397,7 +418,12 @@ BOOL DecodeNextVideoFrame(void)
             } else {
                 s_frameIndex++;
             }
-            return ConvertAndStore();
+            // Converted only if it is the one on screen (ShowLatest): when
+            // playback runs behind, the frames decoded to catch up are not.
+            av_frame_unref(s_shown);
+            av_frame_move_ref(s_shown, s_frame);
+            s_shownFresh = true;
+            return TRUE;
         }
         if (ret == AVERROR_EOF) { s_eof = TRUE; return FALSE; }
         if (ret != AVERROR(EAGAIN)) { s_eof = TRUE; return FALSE; }
@@ -466,6 +492,10 @@ BOOL SeekTo(int frame)
 // ---------------------------------------------------------------------------
 void Present(int frameMs)
 {
+    if (s_shownFresh) {
+        s_shownFresh = false;
+        ConvertAndStore();
+    }
     if (s_rgba == NULL || s_width <= 0 || s_height <= 0) return;
 
     MarniDX* dx = Marni_DX();
@@ -565,6 +595,9 @@ int               s_avFrameMs = 0;
 int               s_avWaitTicks = 0;      // ticks spent before the first picture
 volatile int      s_avEvent     = -1;     // last event id from the player thread
 int               s_avEventSeen = -1;
+volatile int      s_avWarning   = 0;      // data of the last warning event (0x20)
+bool              s_avFailed    = false;  // stopped before the first picture
+char              s_avPath[512];
 
 unsigned char* s_nv12     = NULL;
 size_t         s_nv12Size = 0;
@@ -588,7 +621,10 @@ void* AvFrameAlloc(void*, uint32_t alignment, uint32_t size)
 
     SceUID block = sceKernelAllocMemBlock("re1_fmv_frame", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
                                           size, NULL);
-    if (block < 0) return NULL;
+    if (block < 0) {
+        Trace("CDRAM frame alloc of %u KB failed: 0x%08X", (unsigned)(size >> 10), (unsigned)block);
+        return NULL;
+    }
 
     void* base = NULL;
     sceKernelGetMemBlockBase(block, &base);
@@ -603,8 +639,9 @@ void AvFrameFree(void*, void* ptr)
 
 // Runs on AvPlayer's own thread, so it only records the id; AvTick writes it
 // to the trace from the main thread.
-void AvEvent(void*, int32_t eventId, int32_t, void*)
+void AvEvent(void*, int32_t eventId, int32_t, void* data)
 {
+    if (eventId == 0x20 && data != NULL) s_avWarning = *(const int32_t*)data;
     s_avEvent = eventId;
 }
 
@@ -733,7 +770,9 @@ BOOL AvOpen(const char* path, int playToMs)
 
     Trace("AvPlayer module ready");
     s_av = sceAvPlayerInit(&init);
-    if (s_av < 0) {
+    // The handle is a user-memory pointer (0x81..0x8F...), negative as an int.
+    // Only 0 or a 0x80xxxxxx SCE error code means failure.
+    if (s_av == 0 || ((unsigned)s_av >> 24) == 0x80) {
         Trace("sceAvPlayerInit failed: 0x%08X", (unsigned)s_av);
         s_av = 0;
         return FALSE;
@@ -761,6 +800,9 @@ BOOL AvOpen(const char* path, int playToMs)
     s_avFrameMs = 0;
     s_avWaitTicks = 0;
     s_avEvent = s_avEventSeen = -1;
+    s_avWarning = 0;
+    s_avFailed  = false;
+    snprintf(s_avPath, sizeof(s_avPath), "%s", path);
     s_active    = TRUE;
     s_endEvent  = FALSE;
 
@@ -815,6 +857,12 @@ void AvTick(void)
         return;
     }
     if (!sceAvPlayerIsActive(s_av)) {
+        if (s_avWaitTicks >= 0) {
+            // Stopped without a single picture: AvPlayer rejected the stream.
+            Trace("AvPlayer stopped before the first picture (warning 0x%08X)",
+                  (unsigned)s_avWarning);
+            s_avFailed = true;
+        }
         s_active = FALSE;
         s_endEvent = TRUE;
     }
@@ -836,13 +884,16 @@ BOOL plat_video_init(void)
     return TRUE;
 }
 
+static bool FitsAvPlayer(const char* path);
+static bool s_avSkip = false;   // reopen through ffmpeg after an AvPlayer failure
+
 BOOL plat_video_open_and_play(const char* path, int playToMs)
 {
     AvClose();
     FreeAll();
     TraceBegin(path);
 
-    if (IsMp4(path) && AvOpen(path, playToMs)) {
+    if (IsMp4(path) && !s_avSkip && FitsAvPlayer(path) && AvOpen(path, playToMs)) {
         return TRUE;
     }
 
@@ -903,6 +954,7 @@ BOOL plat_video_open_and_play(const char* path, int playToMs)
         }
         s_width  = s_vctx->width;
         s_height = s_vctx->height;
+
         s_fps    = 10.0;   // the PC movies' rate, if nothing below knows better
         if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0) {
             s_fps = av_q2d(st->avg_frame_rate);
@@ -936,7 +988,8 @@ BOOL plat_video_open_and_play(const char* path, int playToMs)
 
     s_pkt   = av_packet_alloc();
     s_frame = av_frame_alloc();
-    if (s_pkt == NULL || s_frame == NULL) { FreeAll(); return FALSE; }
+    s_shown = av_frame_alloc();
+    if (s_pkt == NULL || s_frame == NULL || s_shown == NULL) { FreeAll(); return FALSE; }
 
     s_useAudio = OpenAudio();
     Trace("decoders open: video %s, audio %s",
@@ -1007,8 +1060,19 @@ void plat_video_tick(void)
     if (!s_active) return;
 
     const DWORD t0 = plat_time_ms();
-    if (s_avOpen) AvTick();
-    else if (s_fmt != NULL) TickFfmpeg();
+    if (s_avOpen) {
+        AvTick();
+        if (s_avFailed) {
+            // Play it in software rather than skip the movie.
+            char path[512];
+            snprintf(path, sizeof(path), "%s", s_avPath);
+            const int playTo = s_avPlayTo;
+            Trace("falling back to ffmpeg");
+            s_avSkip = true;
+            plat_video_open_and_play(path, playTo);
+            s_avSkip = false;
+        }
+    } else if (s_fmt != NULL) TickFfmpeg();
 
     const DWORD spent = plat_time_ms() - t0;
     if (spent > 100) Trace("slow tick: %u ms", (unsigned)spent);
@@ -1084,7 +1148,7 @@ static unsigned Be32(const unsigned char* p)
 }
 
 // 1 = H.264 the hardware takes, 0 = something it does not, -1 = no answer.
-static int ProbeMp4(FILE* f)
+static int ProbeMp4(FILE* f, int* height)
 {
     // Top-level boxes until moov; moov can sit at either end of the file.
     long pos = 0;
@@ -1106,6 +1170,10 @@ static int ProbeMp4(FILE* f)
             int verdict = -1;
             if (fread(moov, 1, (size_t)body, f) == body) {
                 for (size_t i = 0; i + 12 <= body; ++i) {
+                    // avc1 sample entry: height 26 bytes after the fourcc.
+                    if (height != NULL && memcmp(moov + i, "avc1", 4) == 0 && i + 32 <= body) {
+                        *height = (moov[i + 30] << 8) | moov[i + 31];
+                    }
                     if (memcmp(moov + i, "hvc1", 4) == 0 || memcmp(moov + i, "hev1", 4) == 0) {
                         verdict = 0;
                         break;
@@ -1161,7 +1229,21 @@ BOOL plat_video_can_play(const char* path)
     if (!IsMp4(path)) return FfmpegCanDecode(path);
     FILE* f = fopen(path, "rb");
     if (f == NULL) return FALSE;
-    const int verdict = ProbeMp4(f);
+    const int verdict = ProbeMp4(f, NULL);
     fclose(f);
     return verdict != 0 ? TRUE : FALSE;
+}
+
+// SceAvPlayer stops without a picture on anything taller than 720 lines (the
+// HD mod's 1280x960), so those skip it. The Vita's AVC decoder refuses them
+// too (sceVideodecInitLibrary 0x80620802): OPTIMIZE scales them to 640x480.
+static bool FitsAvPlayer(const char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return true;
+    int height = 0;
+    ProbeMp4(f, &height);
+    fclose(f);
+    if (height > 720) Trace("%d lines: too tall for AvPlayer", height);
+    return height <= 720;
 }

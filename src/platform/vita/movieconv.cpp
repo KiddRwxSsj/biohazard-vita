@@ -8,7 +8,10 @@
 //   MOVIE_REMUX        hardware-friendly H.264 in the wrong container (TeamX's
 //                      H.264-in-AVI): the video is copied into an .mp4 as it
 //                      is and the audio re-encoded to AAC - quick,
-//   MOVIE_TRANSCODE    H.264 the chip can't decode (High 4:4:4, 10-bit), or
+//   MOVIE_TRANSCODE    H.264 the chip can't decode (High 4:4:4, 10-bit, or
+//                      larger than 640x480: AvPlayer stops above 720 lines,
+//                      sceVideodec refuses 1280x960, and software H.264 at
+//                      that size runs at 1-7 fps), or
 //                      any other codec ffmpeg can read: decoded in software
 //                      and re-encoded to MPEG-4 part 2 + MP3 in an .avi, at
 //                      most 640x480 so it plays back in real time - slow,
@@ -441,7 +444,10 @@ int vita_movie_classify(const char* path)
         const bool mp4 = EndsWithNoCase(p, ".mp4") || EndsWithNoCase(p, ".m4v");
         const bool avi = EndsWithNoCase(p, ".avi");
         if (id == AV_CODEC_ID_H264) {
-            const int hw = H264HardwareOk(fmt, vs);
+            const AVCodecParameters* par = fmt->streams[vs]->codecpar;
+            // The movie pack's 640x480 H.264 is the size known to play.
+            const bool small = par->width <= 640 && par->height <= 480;
+            const int hw = small ? H264HardwareOk(fmt, vs) : 0;
             if (hw == 1 && mp4) {
                 verdict = MOVIE_OK;
             } else if (hw == 1) {

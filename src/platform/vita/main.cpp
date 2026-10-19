@@ -81,7 +81,7 @@ int main(int argc, char** argv)
     // exited the process while vitaGL's splash thread was still drawing, and
     // that thread then faulted inside SceGxm.
     vglInitWithCustomThreshold(0, VITA_SCREEN_W, VITA_SCREEN_H,
-                               16 * 1024 * 1024, 8 * 1024 * 1024, 0, 0x8C6000,
+                               16 * 1024 * 1024, 32 * 1024 * 1024, 0, 0x8C6000,
                                msaa);
     s_glReady = TRUE;
 
